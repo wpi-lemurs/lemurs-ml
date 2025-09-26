@@ -1,11 +1,6 @@
 import torch
 from transformers import pipeline, WhisperConfig, WhisperModel
-import requests
-import tempfile
-import os
-import librosa
-import soundfile as sf
-import numpy as np
+import pandas as pd
 
 # Check if CUDA is available, otherwise use CPU
 device = 0 if torch.cuda.is_available() else -1
@@ -29,3 +24,6 @@ except Exception as e:
 # Create model configuration and model instance
 configuration = WhisperConfig()
 model = WhisperModel(configuration)
+
+screentime_data = pd.read_csv('screentime_data.csv')
+screentime_app_data = pd.read_csv('screentime_app_data.csv')
