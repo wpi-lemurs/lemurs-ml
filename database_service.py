@@ -18,6 +18,15 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Database configuration
+db_config = {
+    'host': os.getenv("LEMURS_POSTGRES_HOST", "host"),
+    'port': int(os.getenv("LEMURS_POSTGRES_PORT", 5432)),
+    'dbname': os.getenv("LEMURS_POSTGRES_DB", 'your_database'),
+    'user': os.getenv("LEMURS_POSTGRES_USER", 'your_username'),
+    'password': os.getenv("LEMURS_POSTGRES_PASSWORD", 'your_password'),
+}
+
 class DatabaseService:
     """Class to extract data directly from PostgreSQL database"""
 
@@ -348,21 +357,9 @@ class DatabaseService:
             self.disconnect()
 
 def main():
-    """Main function with example usage"""
 
     print("PostgreSQL Audio Extractor")
     print("=" * 50)
-
-    # Database configuration - UPDATE THESE VALUES
-    db_config = {
-        'host': os.getenv("LEMURS_POSTGRES_HOST", "host"),           # Your database host
-        'port': int(os.getenv("LEMURS_POSTGRES_PORT", 5432)),       # Your database port
-        'dbname': os.getenv("LEMURS_POSTGRES_DB", 'your_database'),  # Your database name
-        'user': os.getenv("LEMURS_POSTGRES_USER", 'your_username'),   # Your database username
-        'password': os.getenv("LEMURS_POSTGRES_PASSWORD", 'your_password'),   # Your database password
-    }
-
-    # Uncomment and modify the following lines once you've updated the config:
 
     extractor = DatabaseService(**db_config)
 
