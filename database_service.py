@@ -1,7 +1,7 @@
 """
 PostgreSQL Audio Extractor - Directly connects to database to extract audio files
 """
-
+import pandas as pd
 import psycopg2
 import os
 from pathlib import Path
@@ -29,7 +29,6 @@ db_config = {
 
 class DatabaseService:
     """Class to extract data directly from PostgreSQL database"""
-
     def __init__(self,
                  host: str = "localhost",
                  port: int = 5432,
@@ -355,6 +354,43 @@ class DatabaseService:
 
         finally:
             self.disconnect()
+
+    def extract_from_database(self, table_name: str) -> pd.DataFrame:
+        """
+        Screentime data extraction method
+        """
+        # Connect if not already connected
+        if not self.connection:
+            if not self.connect():
+                raise Exception("Failed to connect to database")
+
+        try:
+            cursor = self.connection.cursor()
+
+            # Build query
+            query = f"""
+                       SELECT *
+                       FROM {table_name}
+                       ORDER BY id
+                   """
+
+            cursor.execute(query)
+
+            # Fetch all records
+            records = cursor.fetchall()
+
+            # Get column names
+            columns = [desc[0] for desc in cursor.description]
+
+            # Convert to dataframe
+            df = pd.DataFrame(records, columns=columns)
+            cursor.close()
+            logger.info(f"Retrieved {len(df)} records from {table_name}")
+            return df
+        except Exception as e:
+            logger.error(f"Error extracting data from {table_name}: {e}")
+            raise
+
 
 def main():
 
