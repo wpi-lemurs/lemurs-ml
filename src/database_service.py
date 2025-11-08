@@ -363,7 +363,7 @@ class DatabaseService:
         if not self.connection:
             if not self.connect():
                 raise Exception("Failed to connect to database")
-
+        
         try:
             cursor = self.connection.cursor()
 
@@ -378,7 +378,7 @@ class DatabaseService:
 
             # Fetch all records
             records = cursor.fetchall()
-
+            
             # Get column names
             columns = [desc[0] for desc in cursor.description]
 
