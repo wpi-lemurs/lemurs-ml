@@ -4,25 +4,29 @@ This repository provides tools for extracting data for machine learning workflow
 
 ## Requirements
 Please create a virtual environment using the command:
-```python -m venv venv
+``` bash
+python -m venv venv
 ```
 
 Activate the virtual environment:
 - On Windows:
-  ```venv\Scripts\activate
-  ```
+``` bash
+venv\Scripts\activate
+```
 - On macOS/Linux:
-  ```source venv/bin/activate
-  ```
+``` bash
+source venv/bin/activate
+```
 
 Install the required packages:
-```pip install -r requirements.txt
+``` bash
+pip install -r requirements.txt
 ```
 
 ## Environment Configuration
 Create a `.env` file in the project root with your database credentials:
 
-```
+``` bash
 LEMURS_POSTGRES_HOST=your_db_host
 LEMURS_POSTGRES_PORT=5432
 LEMURS_POSTGRES_DB=your_database_name
