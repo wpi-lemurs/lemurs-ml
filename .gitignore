@@ -19,4 +19,4 @@ build/
 .coverage
 htmlcov/
 .vscode/
-data/db_extracted_audio
+src/data/db_extracted_audio
