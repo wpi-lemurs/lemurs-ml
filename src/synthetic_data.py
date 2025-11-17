@@ -10,47 +10,64 @@ from sdgx.data_processors.formatters.datetime import DatetimeFormatter
 from steps_analysis import unique_steps
 import pandas as pd
 
-unique_steps = unique_steps.copy()
+def generate_synthetic_data(df, num_samples):
+    '''
+    Generates synthetic data based on a dataframe.
+    INPUT MUST BE REPRESENTATIVE OF REAL DATA.
+    :param df: dataframe of original data
+    :param num_samples: number of samples to generate
+    :return: new dataframe of synthetic data
+    '''
+    df = df.copy()
 
-# convert datetime columns to timestamp
-formatter = DatetimeFormatter()
-datetime_formats = {
-    'start_timestamp': '%Y-%m-%d %H:%M:%S.%f',
-    'end_timestamp': '%Y-%m-%d %H:%M:%S.%f',
-    'recorded_date': '%Y-%m-%d %H:%M:%S.%f'
-}
-new_df = formatter.convert_datetime_columns(['start_timestamp', 'end_timestamp', 'recorded_date'],datetime_formats,unique_steps)
+    # convert any datetime columns to timestamp
+    datetime_formats = {}
+    format = '%Y-%m-%d %H:%M:%S.%f'
 
-# convert df to csv
-csv_path = "new_df.csv"
-new_df.to_csv(csv_path, index=False)
+    # identify datetime columns
+    for col in df.columns:
+       # case 1: already datetime dtype
+       if pd.api.types.is_datetime64_any_dtype(df[col]):
+           datetime_formats[col] = format
+           continue
+        # case 2: try converting string/object columns to datetime
+       if df[col].dtype == 'object':
+           try:
+               pd.to_datetime(df[col], errors='raise')
+               datetime_formats[col] = format
+           except Exception:
+               pass  # not a datetime column
 
-# create data connector for csv file
-data_connector = CsvConnector(path=csv_path)
+    # convert datetime columns to timestamp
+    formatter = DatetimeFormatter()
+    new_df = formatter.convert_datetime_columns(datetime_formats.keys(), datetime_formats, df)
 
-# initialize data loader
-dataloader = DataLoader(data_connector)
-# Access data
-dataloader.load_all()  # This will read all data from csv, and cache it.
-dataloader.load_all()  # This will read all data from cache.
+    # convert df to csv
+    csv_path = "new_df.csv"
+    new_df.to_csv(csv_path, index=False)
 
-# Initialize synthesizer, use CTGAN model
-synthesizer = Synthesizer(
-   model=CTGANSynthesizerModel(epochs=1),  # For quick demo
-   data_connector=data_connector,
-)
+    # create data connector for csv file
+    data_connector = CsvConnector(path=csv_path)
 
-# Fit the model
-synthesizer.fit()
+    # initialize data loader
+    dataloader = DataLoader(data_connector)
 
-# Sample
-sampled_data = synthesizer.sample(400)
-# convert back to datetime
-sampled_data['start_timestamp'] = pd.to_datetime(sampled_data['start_timestamp'], unit='s')
-sampled_data['end_timestamp'] = pd.to_datetime(sampled_data['end_timestamp'], unit='s')
-sampled_data['recorded_date'] = pd.to_datetime(sampled_data['recorded_date'], unit='s')
-print(sampled_data)
+    # Access data
+    dataloader.load_all()  # This will read all data from csv, and cache it.
+    dataloader.load_all()  # This will read all data from cache.
 
-# save sampled_data to csv file
-sampled_data.to_csv("synthetic_steps.csv", index=False)
+    # Fit synthesizer, use CTGAN model
+    synthesizer = Synthesizer(model=CTGANSynthesizerModel(epochs=1), data_connector=data_connector)
+    synthesizer.fit()
 
+    # Sample
+    sampled_data = synthesizer.sample(num_samples)
+    # convert timestamps back to datetime
+    for col in datetime_formats.keys():
+        sampled_data[col] = pd.to_datetime(sampled_data[col], unit='s')
+
+    return df
+
+# Steps
+synthetic_steps = generate_synthetic_data(unique_steps, num_samples=400)
+print(synthetic_steps)
