@@ -7,7 +7,7 @@ from sdgx.models.ml.single_table.ctgan import CTGANSynthesizerModel
 from sdgx.synthesizer import Synthesizer
 from sdgx.data_loader import DataLoader
 from sdgx.data_processors.formatters.datetime import DatetimeFormatter
-from steps_analysis import unique_steps
+from health_data_analysis import unique_steps
 import pandas as pd
 
 def generate_synthetic_data(df, num_samples):
