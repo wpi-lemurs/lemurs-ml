@@ -11,11 +11,8 @@ Behavior:
 - Questions q1..q9 range 0-3.
 - phq9_total_score is the sum of q1..q9.
 - severity_label mapping:
-    0-4 -> minimal
-    5-9 -> mild
-    10-14 -> moderate
-    15-19 -> moderately_severe
-    20+ -> severe
+    0-9 -> not_depressed
+    10+ -> depressed
 
 Usage:
     python3 generate_phq9_responses.py output.csv
@@ -42,15 +39,9 @@ def format_ts(dt):
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 def severity_label_from_score(score):
-    if score <= 4:
-        return "minimal"
     if score <= 9:
-        return "mild"
-    if score <= 14:
-        return "moderate"
-    if score <= 19:
-        return "moderately_severe"
-    return "severe"
+        return "not_depressed"
+    return "depressed"
 
 def weighted_response(rng):
     # Realistic bias toward lower answers: weights for 0,1,2,3
