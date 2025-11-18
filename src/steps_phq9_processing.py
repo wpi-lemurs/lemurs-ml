@@ -92,7 +92,7 @@ def main():
     # Create the combined dataset for modeling
     modeling_data = merge_weekly_steps_with_phq9(weekly_steps, phq9_data)
     print(modeling_data.head(10))
-    export_as_csv(weekly_steps, 'modeling_data_steps_phq9.csv')
+    export_as_csv(modeling_data, 'modeling_data_steps_phq9.csv')
 
 if __name__ == '__main__':
     main()
