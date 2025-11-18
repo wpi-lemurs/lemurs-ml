@@ -10,10 +10,10 @@ distance_data = service.extract_from_database("distance")
 calorie_data = service.extract_from_database("calorie")
 
 # Remove duplicate rows
-unique_steps = steps_data.drop_duplicates(subset='start_timestamp')
-unique_speed_data = speed_data.drop_duplicates(subset='start_timestamp')
-unique_distance_data = distance_data.drop_duplicates(subset='start_timestamp')
-unique_calorie_data = calorie_data.drop_duplicates(subset='start_timestamp')
+# unique_steps = steps_data.drop_duplicates(subset='start_timestamp')
+# unique_speed_data = speed_data.drop_duplicates(subset='start_timestamp')
+# unique_distance_data = distance_data.drop_duplicates(subset='start_timestamp')
+# unique_calorie_data = calorie_data.drop_duplicates(subset='start_timestamp')
 
 def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, week_anchor='MON', fill_missing=False, new_col_name='avg_daily_steps', app_user_id=-1):
     """
@@ -36,7 +36,7 @@ def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, wee
     if df is None:
         raise ValueError("df must be a pandas DataFrame")
 
-    df = df.copy()
+    df = df.drop_duplicates(subset='start_timestamp').copy()
 
     # Check if app_user_id column exists
     has_app_user_id = 'app_user_id' in df.columns
@@ -111,26 +111,17 @@ def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, wee
 
 
 # convenience wrappers that require an explicit DataFrame to avoid DB access on import
-def weekly_avg_steps(df=unique_steps, **kwargs):
+def weekly_avg_steps(df=steps_data, **kwargs):
     return weekly_avg_health_data(df, new_col_name='avg_daily_steps', **kwargs)
 
 
-def weekly_avg_speed(df=unique_speed_data, **kwargs):
+def weekly_avg_speed(df=speed_data, **kwargs):
     return weekly_avg_health_data(df, new_col_name='avg_daily_speed', **kwargs)
 
 
-def weekly_avg_distance(df=unique_distance_data, **kwargs):
+def weekly_avg_distance(df=distance_data, **kwargs):
     return weekly_avg_health_data(df, new_col_name='avg_daily_distance', **kwargs)
 
 
-def weekly_avg_calorie(df=unique_calorie_data, **kwargs):
+def weekly_avg_calorie(df=calorie_data, **kwargs):
     return weekly_avg_health_data(df, new_col_name='avg_daily_calories', **kwargs)
-
-print("Steps data columns:", unique_steps.columns.tolist())
-print("Sample steps data:")
-print(unique_steps.head())
-print("\nWeekly averages:")
-print(weekly_avg_steps().head())
-print(weekly_avg_speed().head())
-print(weekly_avg_distance().head())
-print(weekly_avg_calorie().head())
