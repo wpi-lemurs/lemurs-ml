@@ -8,15 +8,23 @@ from sdgx.synthesizer import Synthesizer
 from sdgx.data_loader import DataLoader
 from sdgx.data_processors.formatters.datetime import DatetimeFormatter
 from health_data_analysis import unique_steps
+from PHQ9_categorization import df as phq9
 import pandas as pd
 
-def generate_synthetic_data(df, num_samples):
+import warnings #warning are annoying
+
+from src.database_service import DatabaseService
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="sdgx")
+
+
+def generate_synthetic_data(df, num_samples, name):
     '''
     Generates synthetic data based on a dataframe.
     INPUT MUST BE REPRESENTATIVE OF REAL DATA.
     :param df: dataframe of original data
     :param num_samples: number of samples to generate
-    :return: new dataframe of synthetic data
+    :param name: name of the data (e.g., 'steps')
     '''
     df = df.copy()
 
@@ -66,8 +74,18 @@ def generate_synthetic_data(df, num_samples):
     for col in datetime_formats.keys():
         sampled_data[col] = pd.to_datetime(sampled_data[col], unit='s')
 
-    return df
+    # export as csv
+    sampled_data.to_csv(f"synthetic_{name}.csv", index=False)
+
+# Create db service instance
+service = DatabaseService()
+# Extract all health data from database
+steps_data = service.extract_from_database("step")
 
 # Steps
-synthetic_steps = generate_synthetic_data(unique_steps, num_samples=400)
-print(synthetic_steps)
+# user testing generally had 10-200 steps/day. for 50 users across 4 weeks, this comes out to around 10,000 rows
+generate_synthetic_data(unique_steps, num_samples=10000, name='steps')
+
+# PHQ9
+# each user should have 4. for 50 users, this would be 200 rows
+generate_synthetic_data(phq9, num_samples=200, name='phq9')
