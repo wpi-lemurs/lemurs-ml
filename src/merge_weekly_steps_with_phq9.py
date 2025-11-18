@@ -15,7 +15,7 @@ phq9_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'syntheti
 # Generate weekly average steps for each user
 weekly_steps = weekly_avg_health_data(steps_data, target_col='steps', new_col_name='avg_daily_steps')
 
-def merge_weekly_steps_with_phq9(weekly_steps_df, phq9_df, week_anchor='MON'):
+def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data, week_anchor='MON'):
     """
     Merge weekly average steps data with PHQ-9 depression labels.
 
@@ -88,11 +88,12 @@ def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
     df.to_csv(output_path, index=False)
     print(f"Modeling data saved to: {output_path}")
 
+
 def main():
     # Create the combined dataset for modeling
-    modeling_data = merge_weekly_steps_with_phq9(weekly_steps, phq9_data)
+    modeling_data = merge_weekly_steps_with_phq9()
     print(modeling_data.head(10))
-    export_as_csv(weekly_steps, 'modeling_data_steps_phq9.csv')
+    export_as_csv(modeling_data, 'modeling_data_steps_phq9.csv')
 
 if __name__ == '__main__':
     main()
