@@ -1,5 +1,5 @@
 import pandas as pd
-from database_service import DatabaseService, db_config
+from src.database_service import DatabaseService, db_config
 
 def get_phq9_dataframe():
     """

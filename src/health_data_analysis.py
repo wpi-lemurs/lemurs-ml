@@ -1,4 +1,4 @@
-from database_service import DatabaseService
+from src.database_service import DatabaseService
 import pandas as pd
 
 # Create db service instance

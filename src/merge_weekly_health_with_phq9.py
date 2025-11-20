@@ -1,5 +1,5 @@
-from health_data_analysis import *
-from PHQ9_categorization_binary import *
+from src.health_data_analysis import *
+from src.categorization.PHQ9_categorization_binary import *
 import os
 from functools import reduce
 
@@ -19,7 +19,7 @@ weekly_distance = weekly_avg_distance()
 # Generate weekly average steps for each user
 weekly_steps = weekly_avg_health_data(steps_data, target_col='steps', new_col_name='avg_daily_steps')
 
-def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON'):
+def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON', steps_only=False):
     """
     Merge weekly average steps data with PHQ-9 depression labels.
 
@@ -77,7 +77,13 @@ def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON'):
     }).reset_index()
 
     # List all DataFrames to merge
-    dfs_to_merge = [
+    if steps_only:
+        dfs_to_merge = [
+            weekly_steps,
+            phq9_weekly,
+        ]
+    else:
+        dfs_to_merge = [
         weekly_steps,
         weekly_calorie,
         weekly_speed,
@@ -102,7 +108,7 @@ def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
 
 def main():
     # Create the combined dataset for modeling
-    modeling_data = merge_weekly_health_with_phq9()
+    modeling_data = merge_weekly_health_with_phq9(steps_only=False)
     print(modeling_data.head(10))
     export_as_csv(modeling_data, 'health_and_phq9_data.csv')
 
