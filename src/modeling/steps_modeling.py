@@ -1,5 +1,8 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import roc_curve, auc, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
@@ -114,3 +117,90 @@ print("\nBoth models trained successfully!")
 print(f"Logistic Regression - Test Accuracy: {accuracy_score(y_test, y_pred_lr):.2%}")
 print(f"Random Forest - Test Accuracy: {accuracy_score(y_test, y_pred_rf):.2%}")
 
+# Confusion Matrix Heatmaps
+plt.figure(figsize=(6,4))
+sns.heatmap(confusion_matrix(y_test, y_pred_lr),
+            annot=True, fmt='d', cmap='Blues')
+plt.title("Logistic Regression – Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(6,4))
+sns.heatmap(confusion_matrix(y_test, y_pred_rf),
+            annot=True, fmt='d', cmap='Purples')
+plt.title("Random Forest – Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.tight_layout()
+plt.show()
+
+# ROC Curve Plot
+if 'depressed' in lr_model.classes_:
+    depressed_idx = list(lr_model.classes_).index('depressed')
+
+    # Logistic Regression
+    fpr_lr, tpr_lr, _ = roc_curve(y_test == "depressed",
+                                  y_pred_proba_lr[:, depressed_idx])
+    auc_lr = auc(fpr_lr, tpr_lr)
+
+    # Random Forest
+    fpr_rf, tpr_rf, _ = roc_curve(y_test == "depressed",
+                                  y_pred_proba_rf[:, depressed_idx])
+    auc_rf = auc(fpr_rf, tpr_rf)
+
+    plt.figure(figsize=(7,5))
+    plt.plot(fpr_lr, tpr_lr, label=f"Logistic Regression AUC = {auc_lr:.3f}")
+    plt.plot(fpr_rf, tpr_rf, color="purple", label=f"Random Forest AUC = {auc_rf:.3f}")
+    plt.plot([0,1], [0,1], 'k--')
+
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve – Depression vs Not Depressed")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+# F1 Score Bar Chart
+f1_lr = f1_score(y_test, y_pred_lr, average='weighted')
+f1_rf = f1_score(y_test, y_pred_rf, average='weighted')
+
+plt.figure(figsize=(6,4))
+f1_bars = plt.bar(['Logistic Regression', 'Random Forest'], [f1_lr, f1_rf])
+plt.ylabel("Weighted F1 Score")
+plt.title("F1 Score Comparison")
+plt.ylim(0, 1)
+for bar, val in zip(f1_bars, [f1_lr, f1_rf]):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width() / 2, height + 0.02,
+             f"{val:.2%}", ha='center', va='bottom', fontsize=10)
+plt.tight_layout()
+plt.show()
+
+# Step Accuracy Graph
+acc_lr = accuracy_score(y_test, y_pred_lr)
+acc_rf = accuracy_score(y_test, y_pred_rf)
+
+plt.figure(figsize=(6,4))
+bars = plt.bar(['Logistic Regression', 'Random Forest'],
+               [acc_lr, acc_rf])
+plt.ylabel("Accuracy")
+plt.title("Accuracy Comparison")
+plt.ylim(0, 1)
+for bar, val in zip(bars, [acc_lr, acc_rf]):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width() / 2, height + 0.02,
+             f"{val:.2%}", ha='center', va='bottom', fontsize=10)
+plt.tight_layout()
+plt.show()
+
+# Steps Distribution by Class
+plt.figure(figsize=(6,4))
+sns.boxplot(data=test_df, x='actual', y='avg_daily_steps')
+plt.title("Distribution of Steps by Actual Depression Label")
+plt.xlabel("Depression Label")
+plt.ylabel("Average Daily Steps")
+plt.tight_layout()
+plt.show()
