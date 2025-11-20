@@ -1,21 +1,25 @@
 from health_data_analysis import *
 from PHQ9_categorization_binary import *
 import os
+from functools import reduce
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Load data with synthetic data paths (just for testing)
-steps_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'synthetic_step_data.csv'))
-phq9_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'synthetic_phq9_data.csv'))
+# steps_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'synthetic_step_data.csv'))
+# phq9_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'synthetic_phq9_data.csv'))
 
 # We eventually will use this instead
-# weekly_steps = weekly_avg_steps()
-# phq9_data = get_phq9_dataframe()
+weekly_steps = weekly_avg_steps()
+phq9_data = get_phq9_dataframe()
+weekly_speed = weekly_avg_speed()
+weekly_calorie = weekly_avg_calorie()
+weekly_distance = weekly_avg_distance()
 
 # Generate weekly average steps for each user
 weekly_steps = weekly_avg_health_data(steps_data, target_col='steps', new_col_name='avg_daily_steps')
 
-def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data, week_anchor='MON'):
+def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON'):
     """
     Merge weekly average steps data with PHQ-9 depression labels.
 
@@ -24,7 +28,7 @@ def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data
 
     Parameters:
     - weekly_steps_df: DataFrame with columns ['app_user_id', 'week_start', 'avg_daily_steps']
-    - phq9_df: DataFrame with PHQ-9 survey data including 'app_user_id', 'response_timestamp', 'severity_label'
+    - phq9_df: DataFrame with PHQ-9 survey data including 'app_user_id', 'timestamp', 'severity_label'
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
 
     Returns:
@@ -34,8 +38,8 @@ def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data
     phq9_copy = phq9_df.copy()
 
     # Parse PHQ-9 response timestamps
-    phq9_copy['response_timestamp'] = pd.to_datetime(phq9_copy['response_timestamp'], errors='coerce')
-    phq9_copy = phq9_copy.dropna(subset=['response_timestamp'])
+    phq9_copy['timestamp'] = pd.to_datetime(phq9_copy['timestamp'], errors='coerce')
+    phq9_copy = phq9_copy.dropna(subset=['timestamp'])
 
     # Calculate the week start for each PHQ-9 response
     # Use resample to match the weekly_avg_health_data logic exactly
@@ -44,7 +48,7 @@ def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data
     # Group by user and calculate week_start for each response
     phq9_weekly_list = []
     for user_id, user_df in phq9_copy.groupby('app_user_id'):
-        user_df = user_df.set_index('response_timestamp').sort_index()
+        user_df = user_df.set_index('timestamp').sort_index()
 
         # For each response, find which week it belongs to
         for timestamp, row in user_df.iterrows():
@@ -72,12 +76,19 @@ def merge_weekly_steps_with_phq9(weekly_steps_df=weekly_steps, phq9_df=phq9_data
         'phq9_total_score': 'first'
     }).reset_index()
 
-    # Merge weekly steps with PHQ-9 labels on both app_user_id and week_start
-    merged_df = pd.merge(
-        weekly_steps_df,
-        phq9_weekly,
-        on=['app_user_id', 'week_start'],
-        how='inner'  # Only keep records where both steps and PHQ-9 data exist
+    # List all DataFrames to merge
+    dfs_to_merge = [
+        weekly_steps,
+        weekly_calorie,
+        weekly_speed,
+        weekly_distance,
+        phq9_weekly
+    ]
+
+    # Merge all DataFrames sequentially on app_user_id and week_start
+    merged_df = reduce(
+        lambda left, right: pd.merge(left, right, on=['app_user_id', 'week_start'], how='inner'),
+        dfs_to_merge
     )
 
     return merged_df
@@ -91,9 +102,9 @@ def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
 
 def main():
     # Create the combined dataset for modeling
-    modeling_data = merge_weekly_steps_with_phq9()
+    modeling_data = merge_weekly_health_with_phq9()
     print(modeling_data.head(10))
-    export_as_csv(modeling_data, 'modeling_data_steps_phq9.csv')
+    export_as_csv(modeling_data, 'health_and_phq9_data.csv')
 
 if __name__ == '__main__':
     main()
