@@ -15,6 +15,75 @@ calorie_data = service.extract_from_database("calorie")
 # unique_distance_data = distance_data.drop_duplicates(subset='start_timestamp')
 # unique_calorie_data = calorie_data.drop_duplicates(subset='start_timestamp')
 
+def _process_health_dataframe(df, agg_func, time_unit, start_col='start_timestamp', value_col=None, app_user_id=-1):
+    """
+    Helper function to process a single health metric dataframe by aggregating to a specified time unit.
+
+    Parameters:
+    - df: DataFrame with health data
+    - agg_func: aggregation function ('sum', 'mean', etc.)
+    - time_unit: 'D' for daily, 'H' for hourly
+    - start_col: name of timestamp column
+    - value_col: name of numeric column to aggregate; if None, auto-detect
+    - app_user_id: filter rows to this app_user_id; if -1, include all users
+
+    Returns:
+    - DataFrame with aggregated data by time unit, or None if input is empty/invalid
+    """
+    if df is None or df.empty:
+        return None
+
+    df = df.drop_duplicates(subset='start_timestamp').copy()
+
+    # Check if app_user_id column exists
+    has_app_user_id = 'app_user_id' in df.columns
+
+    # Filter by app_user_id if needed
+    if app_user_id != -1:
+        if not has_app_user_id:
+            raise KeyError("app_user_id column not found in DataFrame; cannot filter by app_user_id")
+        df = df[df['app_user_id'] == app_user_id]
+
+    # Parse timestamps
+    df[start_col] = pd.to_datetime(df[start_col], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+    df = df.dropna(subset=[start_col])
+
+    if df.empty:
+        return None
+
+    # Determine value column if not specified
+    if value_col is None:
+        numeric = df.select_dtypes(include='number').columns.tolist()
+        if 'app_user_id' in numeric:
+            numeric.remove('app_user_id')
+        for preferred in ['steps', 'speed', 'distance', 'calories', 'value', 'count']:
+            if preferred in numeric:
+                value_col = preferred
+                break
+        if value_col is None:
+            if not numeric:
+                return None
+            value_col = numeric[0]
+
+    # Extract time grouping key based on time_unit
+    if time_unit == 'H':
+        df['time_key'] = df[start_col].dt.floor('h')
+        group_col = 'time_key'
+    elif time_unit == 'D':
+        df['time_key'] = df[start_col].dt.date
+        group_col = 'time_key'
+    else:
+        raise ValueError(f"Unsupported time_unit: {time_unit}. Use 'D' for daily or 'H' for hourly.")
+
+    # Group by user (if exists) and time, then aggregate
+    if has_app_user_id:
+        aggregated = df.groupby(['app_user_id', group_col])[value_col].agg(agg_func).reset_index()
+    else:
+        aggregated = df.groupby(group_col)[value_col].agg(agg_func).reset_index()
+
+    return aggregated
+
+
 def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, week_anchor='MON', fill_missing=False, new_col_name='avg_daily_steps', app_user_id=-1):
     """
     Parse timestamps with milliseconds, optionally filter by user ID, aggregate to daily totals,
@@ -150,59 +219,11 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
       day_index is 0 for the first day of each week, 1 for the second, etc.
     """
 
-    def process_dataframe(df, agg_func, value_col=None):
-        """Helper function to process a single health metric dataframe"""
-        if df is None or df.empty:
-            return None
-
-        df = df.drop_duplicates(subset='start_timestamp').copy()
-
-        # Check if app_user_id column exists
-        has_app_user_id = 'app_user_id' in df.columns
-
-        # Filter by app_user_id if needed
-        if app_user_id != -1:
-            if not has_app_user_id:
-                raise KeyError("app_user_id column not found in DataFrame; cannot filter by app_user_id")
-            df = df[df['app_user_id'] == app_user_id]
-
-        # Parse timestamps
-        df[start_col] = pd.to_datetime(df[start_col], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
-        df = df.dropna(subset=[start_col])
-
-        if df.empty:
-            return None
-
-        # Determine value column
-        if value_col is None:
-            numeric = df.select_dtypes(include='number').columns.tolist()
-            if 'app_user_id' in numeric:
-                numeric.remove('app_user_id')
-            for preferred in ['steps', 'speed', 'distance', 'calories', 'value', 'count']:
-                if preferred in numeric:
-                    value_col = preferred
-                    break
-            if value_col is None:
-                if not numeric:
-                    return None
-                value_col = numeric[0]
-
-        # Extract date
-        df['date'] = df[start_col].dt.date
-
-        # Group by user (if exists) and date, then aggregate
-        if has_app_user_id:
-            daily = df.groupby(['app_user_id', 'date'])[value_col].agg(agg_func).reset_index()
-        else:
-            daily = df.groupby('date')[value_col].agg(agg_func).reset_index()
-
-        return daily
-
-    # Process each health metric
-    daily_steps = process_dataframe(steps_df, 'sum')
-    daily_speed = process_dataframe(speed_df, 'mean')
-    daily_distance = process_dataframe(distance_df, 'sum')
-    daily_calories = process_dataframe(calorie_df, 'sum')
+    # Process each health metric using the shared helper function
+    daily_steps = _process_health_dataframe(steps_df, 'sum', 'D', start_col, app_user_id=app_user_id)
+    daily_speed = _process_health_dataframe(speed_df, 'mean', 'D', start_col, app_user_id=app_user_id)
+    daily_distance = _process_health_dataframe(distance_df, 'sum', 'D', start_col, app_user_id=app_user_id)
+    daily_calories = _process_health_dataframe(calorie_df, 'sum', 'D', start_col, app_user_id=app_user_id)
 
     # Start with the first non-None dataframe
     result = None
@@ -211,7 +232,8 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
                           (daily_calories, 'daily_calories'),
                           (daily_speed, 'daily_avg_speed')]:
         if df is not None:
-            df = df.rename(columns={df.columns[-1]: col_name})
+            # Rename time_key to date and value column to col_name
+            df = df.rename(columns={'time_key': 'date', df.columns[-1]: col_name})
             if result is None:
                 result = df
             else:
@@ -220,7 +242,7 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
                 result = result.merge(df, on=merge_cols, how='outer')
 
     if result is None:
-        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start',
+        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index',
                                     'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed'])
 
     # Convert date back to datetime for week calculation
@@ -254,6 +276,92 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
 
     # Sort by app_user_id (if exists) and date
     sort_cols = ['app_user_id', 'date'] if 'app_user_id' in result.columns else ['date']
+    result = result.sort_values(sort_cols).reset_index(drop=True)
+
+    return result
+
+def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data, cal_df=calorie_data, start_col='start_timestamp', week_anchor='MON', app_user_id=-1):
+    """
+    Calculate the hourly total steps, distance, calories and average speed for each user
+    :param steps_df: DataFrame with steps data
+    :param speed_df: DataFrame with speed data
+    :param distance_df: DataFrame with distance data
+    :param cal_df: DataFrame with calorie data
+    :param start_col: name of timestamp column (default 'start_timestamp')
+    :param week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
+    :param app_user_id: filter rows to this app_user_id; if -1, include all users
+    :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+      'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
+      Each row represents one user's hourly health metrics with the associated day and week.
+      day_index is 0 for the first day of each week, 1 for the second, etc. hour_index is 0 for the first hour of the
+      day where a user has data, 1 for the second, etc.
+    """
+
+    # Process each health metric using the shared helper function
+    hourly_steps = _process_health_dataframe(steps_df, 'sum', 'H', start_col, app_user_id=app_user_id)
+    hourly_speed = _process_health_dataframe(speed_df, 'mean', 'H', start_col, app_user_id=app_user_id)
+    hourly_distance = _process_health_dataframe(distance_df, 'sum', 'H', start_col, app_user_id=app_user_id)
+    hourly_calories = _process_health_dataframe(cal_df, 'sum', 'H', start_col, app_user_id=app_user_id)
+
+
+    # Start with the first non-None dataframe
+    result = None
+    for df, col_name in [(hourly_steps, 'hourly_steps'),
+                          (hourly_distance, 'hourly_distance'),
+                          (hourly_calories, 'hourly_calories'),
+                          (hourly_speed, 'hourly_avg_speed')]:
+        if df is not None:
+            # Rename time_key to datetime and value column to col_name
+            df = df.rename(columns={'time_key': 'datetime', df.columns[-1]: col_name})
+            if result is None:
+                result = df
+            else:
+                # Merge on app_user_id and datetime, or just datetime if no app_user_id
+                merge_cols = ['app_user_id', 'datetime'] if 'app_user_id' in result.columns else ['datetime']
+                result = result.merge(df, on=merge_cols, how='outer')
+
+    if result is None:
+        return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+                                    'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed'])
+
+    # Extract date from datetime
+    result['date'] = result['datetime'].dt.date
+    result['date'] = pd.to_datetime(result['date'])
+
+    # Calculate week_start for each date
+    freq = f'W-{week_anchor}'
+    result['week_start'] = result['date'].dt.to_period(freq).dt.start_time
+
+    # Calculate day index relative to each user's week (0-6)
+    if 'app_user_id' in result.columns:
+        result['day_index'] = (result['date'] - result['week_start']).dt.days
+    else:
+        result['day_index'] = (result['date'] - result['week_start']).dt.days
+
+    # Calculate hour index relative to each user's day
+    # For each user and day, calculate hour index starting from 0
+    if 'app_user_id' in result.columns:
+        # Group by user and date, then assign hour index
+        result = result.sort_values(['app_user_id', 'datetime'])
+        result['hour_index'] = result.groupby(['app_user_id', 'date']).cumcount()
+    else:
+        result = result.sort_values(['datetime'])
+        result['hour_index'] = result.groupby(['date']).cumcount()
+
+    # Reorder columns
+    if 'app_user_id' in result.columns:
+        cols = ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index']
+    else:
+        cols = ['datetime', 'date', 'week_start', 'day_index', 'hour_index']
+
+    for col in ['hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']:
+        if col in result.columns:
+            cols.append(col)
+
+    result = result[cols]
+
+    # Sort by app_user_id (if exists) and datetime
+    sort_cols = ['app_user_id', 'datetime'] if 'app_user_id' in result.columns else ['datetime']
     result = result.sort_values(sort_cols).reset_index(drop=True)
 
     return result
