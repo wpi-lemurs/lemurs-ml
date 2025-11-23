@@ -1,0 +1,3 @@
+app_user_id,week_start,avg_daily_steps,avg_daily_calories,avg_daily_speed,avg_daily_distance,severity_label,phq9_total_score
+21,2025-10-27,854.0,64.66666666666667,761.0,1313.25,not depressed,0
+22,2025-10-20,462.0,8.0,188.0,420.0,not depressed,2
