@@ -1,3 +1,5 @@
+from torch.ao.nn.quantized.functional import interpolate
+
 from src.health_data_analysis import *
 from src.categorization.PHQ9_categorization_binary import *
 import os
@@ -96,7 +98,7 @@ def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON', steps_on
 
     return merged_df
 
-def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_anchor='MON'):
+def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_anchor='MON', interpolate=False):
     """
     Merge daily health data with PHQ-9 depression labels.
 
@@ -109,13 +111,14 @@ def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_a
                                 'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']
     - phq9_df: DataFrame with PHQ-9 survey data including 'app_user_id', 'timestamp', 'severity_label'
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
+    - interpolate: if True, apply linear interpolation to fill null values in health data
 
     Returns:
     - DataFrame with daily health metrics and associated PHQ-9 labels
     """
     # If no daily health data provided, generate it
     if daily_health_df is None:
-        daily_health_df = daily_health_with_week(week_anchor=week_anchor)
+        daily_health_df = daily_health_with_week(week_anchor=week_anchor, interpolate=interpolate)
 
     if daily_health_df.empty:
         return daily_health_df
@@ -166,7 +169,7 @@ def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_a
     return merged_df
 
 
-def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week_anchor='MON'):
+def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week_anchor='MON', interpolate=False):
     """
     Merge hourly health data with PHQ-9 depression labels.
 
@@ -179,13 +182,14 @@ def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week
                                  'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
     - phq9_df: DataFrame with PHQ-9 survey data including 'app_user_id', 'timestamp', 'severity_label'
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
+    - interpolate: if True, apply linear interpolation to fill null values in health data
 
     Returns:
     - DataFrame with hourly health metrics and associated PHQ-9 labels
     """
     # If no hourly health data provided, generate it
     if hourly_health_df is None:
-        hourly_health_df = hourly_health_data(week_anchor=week_anchor)
+        hourly_health_df = hourly_health_data(week_anchor=week_anchor, interpolate=interpolate)
 
     if hourly_health_df.empty:
         return hourly_health_df
@@ -252,13 +256,13 @@ def main():
 
     # Create daily aggregated health data with PHQ-9 labels
     print("\nCreating daily aggregated health data with PHQ-9 labels...")
-    daily_modeling_data = merge_daily_health_with_phq9()
+    daily_modeling_data = merge_daily_health_with_phq9(interpolate=True)
     print(daily_modeling_data.head(10))
     export_as_csv(daily_modeling_data, 'daily_health_and_phq9_data.csv')
 
     # Create hourly aggregated health data with PHQ-9 labels
     print("\nCreating hourly aggregated health data with PHQ-9 labels...")
-    hourly_modeling_data = merge_hourly_health_with_phq9()
+    hourly_modeling_data = merge_hourly_health_with_phq9(interpolate=True)
     print(hourly_modeling_data.head(10))
     export_as_csv(hourly_modeling_data, 'hourly_health_and_phq9_data.csv')
 

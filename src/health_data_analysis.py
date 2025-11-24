@@ -84,6 +84,45 @@ def _process_health_dataframe(df, agg_func, time_unit, start_col='start_timestam
     return aggregated
 
 
+def _apply_interpolation(df, health_cols, has_app_user_id=True):
+    """
+    Apply linear interpolation to fill null values in health data columns.
+    Interpolation is done per user to avoid interpolating across different users.
+
+    Parameters:
+    - df: DataFrame with health data
+    - health_cols: list of column names to interpolate
+    - has_app_user_id: whether the dataframe has an app_user_id column
+
+    Returns:
+    - DataFrame with interpolated values
+    """
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    if has_app_user_id:
+        # Interpolate separately for each user
+        interpolated_dfs = []
+        for user_id, user_df in df.groupby('app_user_id'):
+            for col in health_cols:
+                if col in user_df.columns:
+                    # Linear interpolation for each user
+                    user_df[col] = user_df[col].interpolate(method='linear', limit_direction='both')
+            interpolated_dfs.append(user_df)
+
+        if interpolated_dfs:
+            df = pd.concat(interpolated_dfs, ignore_index=True)
+    else:
+        # Interpolate all data together if no user_id
+        for col in health_cols:
+            if col in df.columns:
+                df[col] = df[col].interpolate(method='linear', limit_direction='both')
+
+    return df
+
+
 def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, week_anchor='MON', fill_missing=False, new_col_name='avg_daily_steps', app_user_id=-1):
     """
     Parse timestamps with milliseconds, optionally filter by user ID, aggregate to daily totals,
@@ -198,7 +237,7 @@ def weekly_avg_calorie(df=calorie_data, **kwargs):
 
 def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data,
                            calorie_df=calorie_data, start_col='start_timestamp',
-                           week_anchor='MON', app_user_id=-1):
+                           week_anchor='MON', app_user_id=-1, interpolate=False):
     """
     Calculate daily totals for steps, distance, calories and daily average for speed,
     while keeping the week_start date column for each day.
@@ -211,6 +250,7 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     - start_col: name of timestamp column (default 'start_timestamp')
     - week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
     - app_user_id: filter rows to this app_user_id; if -1, include all users
+    - interpolate: if True, apply linear interpolation to fill null values
 
     Returns:
     - pandas.DataFrame with columns ['app_user_id', 'date', 'week_start', 'day_index',
@@ -278,9 +318,15 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     sort_cols = ['app_user_id', 'date'] if 'app_user_id' in result.columns else ['date']
     result = result.sort_values(sort_cols).reset_index(drop=True)
 
+    # Apply linear interpolation if requested
+    if interpolate:
+        health_cols = ['daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']
+        has_app_user_id = 'app_user_id' in result.columns
+        result = _apply_interpolation(result, health_cols, has_app_user_id)
+
     return result
 
-def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data, cal_df=calorie_data, start_col='start_timestamp', week_anchor='MON', app_user_id=-1):
+def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data, cal_df=calorie_data, start_col='start_timestamp', week_anchor='MON', app_user_id=-1, interpolate=False):
     """
     Calculate the hourly total steps, distance, calories and average speed for each user
     :param steps_df: DataFrame with steps data
@@ -290,6 +336,7 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
     :param start_col: name of timestamp column (default 'start_timestamp')
     :param week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
     :param app_user_id: filter rows to this app_user_id; if -1, include all users
+    :param interpolate: if True, apply linear interpolation to fill null values
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
       Each row represents one user's hourly health metrics with the associated day and week.
@@ -363,5 +410,11 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
     # Sort by app_user_id (if exists) and datetime
     sort_cols = ['app_user_id', 'datetime'] if 'app_user_id' in result.columns else ['datetime']
     result = result.sort_values(sort_cols).reset_index(drop=True)
+
+    # Apply linear interpolation if requested
+    if interpolate:
+        health_cols = ['hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
+        has_app_user_id = 'app_user_id' in result.columns
+        result = _apply_interpolation(result, health_cols, has_app_user_id)
 
     return result
