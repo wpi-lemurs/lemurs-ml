@@ -1,128 +1,166 @@
-# Linear Interpolation for Health Data
+# Null Value Handling for Health Data
 
 ## Overview
 
-Linear interpolation has been added to the health data analysis functions to fill in missing (null) values in health metrics. This is particularly useful for machine learning models that require complete data.
+Multiple methods for handling missing (null) values have been added to the health data analysis functions. This is particularly useful for machine learning models that require complete data or for exploratory data analysis.
 
-## How It Works
+## Available Methods
 
-Linear interpolation estimates missing values by drawing a straight line between the known values before and after the gap. For example:
+### 1. **None (No Handling)** - `null_method=None`
+Keeps all null values as-is. Use this when you want to see the raw data or when your model can handle missing values.
 
+### 2. **Linear Interpolation** - `null_method='linear'`
+Estimates missing values by drawing a straight line between the known values before and after the gap.
+
+**Example:**
 - Day 1: 100 steps (known)
 - Day 2: ??? steps (missing)
 - Day 3: 200 steps (known)
 
-With interpolation, Day 2 would be estimated as **150 steps** (the midpoint).
+With linear interpolation, Day 2 would be estimated as **150 steps** (the midpoint).
 
-### Per-User Interpolation
+### 3. **Forward/Backward Fill** - `null_method='fill'`
+Fills missing values by carrying forward the last known value (forward fill), then filling any remaining nulls by carrying backward the next known value (backward fill).
 
-**Important:** Interpolation is performed separately for each user to prevent data leakage across different users. This ensures that User A's health patterns don't influence the interpolated values for User B.
+**Example:**
+- Day 1: 100 steps (known)
+- Day 2: ??? steps (missing) → filled with 100 (forward fill)
+- Day 3: ??? steps (missing) → filled with 100 (forward fill)
+- Day 4: 200 steps (known)
 
-## Functions with Interpolation Support
+### Per-User Processing
 
-### 1. `daily_health_with_week(..., interpolate=False)`
+**Important:** All null handling methods are performed separately for each user to prevent data leakage across different users. This ensures that User A's health patterns don't influence the filled values for User B.
+
+## Functions with Null Handling Support
+
+### 1. `daily_health_with_week(..., null_method=None)`
 
 **Parameters:**
-- `interpolate` (bool): Set to `True` to apply linear interpolation to daily health metrics
+- `null_method` (str or None): Method for handling null values
+  - `None`: No null handling (default)
+  - `'linear'`: Linear interpolation
+  - `'fill'`: Forward/backward filling
 
 **Example:**
 ```python
 from src.health_data_analysis import daily_health_with_week
 
-# Without interpolation (default)
-daily_data = daily_health_with_week(interpolate=False)
+# No null handling (default)
+daily_data = daily_health_with_week(null_method=None)
 
-# With interpolation
-daily_data_filled = daily_health_with_week(interpolate=True)
+# With linear interpolation
+daily_data_linear = daily_health_with_week(null_method='linear')
+
+# With forward/backward fill
+daily_data_fill = daily_health_with_week(null_method='fill')
 ```
 
-**What gets interpolated:**
+**What gets processed:**
 - `daily_steps`
 - `daily_distance`
 - `daily_calories`
 - `daily_avg_speed`
 
-### 2. `hourly_health_data(..., interpolate=False)`
+### 2. `hourly_health_data(..., null_method=None)`
 
 **Parameters:**
-- `interpolate` (bool): Set to `True` to apply linear interpolation to hourly health metrics
+- `null_method` (str or None): Method for handling null values
+  - `None`: No null handling (default)
+  - `'linear'`: Linear interpolation
+  - `'fill'`: Forward/backward filling
 
 **Example:**
 ```python
 from src.health_data_analysis import hourly_health_data
 
-# Without interpolation (default)
-hourly_data = hourly_health_data(interpolate=False)
+# No null handling (default)
+hourly_data = hourly_health_data(null_method=None)
 
-# With interpolation
-hourly_data_filled = hourly_health_data(interpolate=True)
+# With linear interpolation
+hourly_data_linear = hourly_health_data(null_method='linear')
+
+# With forward/backward fill
+hourly_data_fill = hourly_health_data(null_method='fill')
 ```
 
-**What gets interpolated:**
+**What gets processed:**
 - `hourly_steps`
 - `hourly_distance`
 - `hourly_calories`
 - `hourly_avg_speed`
 
-### 3. `merge_daily_health_with_phq9(..., interpolate=False)`
+## Visualization Tool
+
+A visualization tool is available to compare the three null handling methods side-by-side:
+
+**Function:** `visualize_steps_with_null_handling(user_id=None, time_unit='D')`
 
 **Parameters:**
-- `interpolate` (bool): Set to `True` to apply linear interpolation before merging with PHQ-9 data
+- `user_id` (int or None): Specific user ID to visualize. If None, uses first available user.
+- `time_unit` (str): 'D' for daily, 'H' for hourly aggregation
 
 **Example:**
 ```python
-from src.merge_weekly_health_with_phq9 import merge_daily_health_with_phq9
+from src.visualization.null_value_visualization import visualize_steps_with_null_handling
 
-# With interpolation for modeling
-modeling_data = merge_daily_health_with_phq9(interpolate=True)
+# Daily visualization for user 20
+visualize_steps_with_null_handling(user_id=20, time_unit='D')
+
+# Hourly visualization for user 20
+visualize_steps_with_null_handling(user_id=20, time_unit='H')
+
+# Auto-select first user
+visualize_steps_with_null_handling(user_id=None, time_unit='D')
 ```
 
-### 4. `merge_hourly_health_with_phq9(..., interpolate=False)`
+This will display three graphs:
+1. Raw data with null values as gaps
+2. Data with linear interpolation (interpolated points highlighted in red)
+3. Data with forward/backward fill (filled points highlighted in purple)
 
-**Parameters:**
-- `interpolate` (bool): Set to `True` to apply linear interpolation before merging with PHQ-9 data
-
-**Example:**
-```python
-from src.merge_weekly_health_with_phq9 import merge_hourly_health_with_phq9
-
-# With interpolation for modeling
-modeling_data = merge_hourly_health_with_phq9(interpolate=True)
-```
+Each graph includes statistics about null values and the impact of the handling method.
 
 ## Test Results
 
-Based on the test output, interpolation significantly reduces null values:
+Based on test output, null handling methods significantly reduce null values:
 
-### Daily Data
-- **Without interpolation:** 6 null values across health columns
-- **With interpolation:** Reduced to 1-3 null values (depending on the metric)
+### Daily Data (all users)
+| Method | Steps Nulls | Distance Nulls | Calories Nulls | Speed Nulls |
+|--------|-------------|----------------|----------------|-------------|
+| None   | 2           | 4              | 7              | 6           |
+| Linear | 1           | 1              | 2              | 3           |
+| Fill   | 1           | 1              | 2              | 3           |
 
-### Hourly Data
-- **Without interpolation:** 18 null values across health columns
-- **With interpolation:** Reduced to 1 null value
+### Hourly Data (all users)
+| Method | Steps Nulls | Distance Nulls | Calories Nulls | Speed Nulls |
+|--------|-------------|----------------|----------------|-------------|
+| None   | 6           | 16             | 19             | 19          |
+| Linear | 1           | 1              | 2              | 3           |
+| Fill   | 1           | 1              | 2              | 3           |
 
-### Daily + PHQ-9 Merged Data
-- **Without interpolation:** 4 total null values in health columns
-- **With interpolation:** Reduced to 1 null value
+Both linear interpolation and forward/backward fill achieve similar null reduction, but may produce different values depending on the data pattern.
 
-### Hourly + PHQ-9 Merged Data
-- **Without interpolation:** 10 total null values in health columns
-- **With interpolation:** Reduced to 3 null values
+## When to Use Each Method
 
-## When to Use Interpolation
+### ✅ Use None (No Handling) When:
+- Performing exploratory data analysis to understand missingness patterns
+- Your model can handle missing values natively (e.g., some tree-based models)
+- You need to preserve the exact nature of data gaps
+- Analyzing data quality and completeness
 
-### ✅ Use Interpolation When:
+### ✅ Use Linear Interpolation When:
 - Training machine learning models that require complete data
 - The missing data points are surrounded by valid measurements
-- You want to maintain temporal continuity in the data
+- You want to maintain temporal trends and smooth transitions
 - Missing values represent short gaps (1-2 time periods)
+- Data has natural continuity (e.g., steps gradually change over time)
 
-### ❌ Avoid Interpolation When:
-- You need to preserve the exact nature of data gaps for analysis
-- There are long sequences of missing data (e.g., user didn't wear device for a week)
-- You're performing exploratory data analysis to understand missingness patterns
-- Your model can handle missing values natively (e.g., some tree-based models)
+### ✅ Use Forward/Backward Fill When:
+- Data tends to remain constant over time
+- You want to use the "last known good value"
+- Dealing with categorical or discrete data that shouldn't be interpolated
+- Missing values occur at the beginning or end of a time series (backward/forward fill is better than interpolation in these cases)
 
 ## Implementation Details
 
