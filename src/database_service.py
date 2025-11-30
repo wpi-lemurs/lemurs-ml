@@ -35,7 +35,7 @@ class DatabaseService:
                  dbname: str = "your_database",
                  user: str = "your_username",
                  password: str = "your_password",
-                 output_dir: str = "data/db_extracted_audio"):
+                 output_dir: str = None):
         """
         Initialize the PostgreSQL audio extractor
 
@@ -45,14 +45,22 @@ class DatabaseService:
             dbname: Database name
             user: Database username
             password: Database password
-            output_dir: Directory to save extracted audio files
+            output_dir: Directory to save extracted audio files (default: project_root/data/db_extracted_audio)
         """
         self.host = os.getenv("LEMURS_POSTGRES_HOST", host)
         self.port = int(os.getenv("LEMURS_POSTGRES_PORT", port))
         self.dbname = os.getenv("LEMURS_POSTGRES_DB", dbname)
         self.user = os.getenv("LEMURS_POSTGRES_USER", user)
         self.password = os.getenv("LEMURS_POSTGRES_PASSWORD", password)
-        self.output_dir = Path(output_dir)
+
+        # Use absolute path from project root to ensure consistent location
+        if output_dir is None:
+            # Get project root (this file is in src/, so go up one level)
+            project_root = Path(__file__).parent.parent
+            self.output_dir = project_root / "data" / "db_extracted_audio"
+        else:
+            self.output_dir = Path(output_dir)
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.connection = None
 
