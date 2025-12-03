@@ -1,6 +1,5 @@
 from src.database_service import DatabaseService
 import pandas as pd
-import os
 
 # Create db service instance
 service = DatabaseService()
@@ -13,13 +12,16 @@ calorie_data = service.extract_from_database("calorie")
 # Synthetic data (comment this out when not using)
 # steps_data = pd.read_csv('../data/synthetic/synthetic_step_data.csv')
 
+# Extract screentime
+screentime_data = service.extract_from_database("screentime")
+
 # Remove duplicate rows
 # unique_steps = steps_data.drop_duplicates(subset='start_timestamp')
 # unique_speed_data = speed_data.drop_duplicates(subset='start_timestamp')
 # unique_distance_data = distance_data.drop_duplicates(subset='start_timestamp')
 # unique_calorie_data = calorie_data.drop_duplicates(subset='start_timestamp')
 
-def _process_health_dataframe(df, agg_func, time_unit, start_col='start_timestamp', value_col=None, app_user_id=-1, date_range=None):
+def _process_passive_data_dataframe(df, agg_func, time_unit, start_col='start_timestamp', value_col=None, app_user_id=-1, date_range=None):
     """
     Helper function to process a single health metric dataframe by aggregating to a specified time unit.
 
@@ -39,7 +41,7 @@ def _process_health_dataframe(df, agg_func, time_unit, start_col='start_timestam
     if df is None or df.empty:
         return None
 
-    df = df.drop_duplicates(subset='start_timestamp').copy()
+    df = df.drop_duplicates(subset=start_col).copy()
 
     # Check if app_user_id column exists
     has_app_user_id = 'app_user_id' in df.columns
@@ -99,54 +101,149 @@ def _process_health_dataframe(df, agg_func, time_unit, start_col='start_timestam
     return aggregated
 
 
-def _apply_null_handling(df, health_cols, method='linear', has_app_user_id=True):
+
+def _add_week_metadata(df, date_col, week_anchor='MON'):
     """
-    Apply null value handling to health data columns using specified method.
-    Handling is done per user to avoid filling across different users.
+    Add week_start and day_index columns to a dataframe based on a date column.
 
     Parameters:
-    - df: DataFrame with health data
-    - health_cols: list of column names to process
-    - method: null handling method - 'linear' for linear interpolation, 'fill' for forward/backward filling, None for no handling
-    - has_app_user_id: whether the dataframe has an app_user_id column
+    - df: DataFrame with date information
+    - date_col: name of the date/datetime column
+    - week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
 
     Returns:
-    - DataFrame with null values handled according to method
+    - DataFrame with added 'week_start' and 'day_index' columns
     """
     if df is None or df.empty:
         return df
 
-    if method is None or method.lower() == 'none':
+    df = df.copy()
+
+    # Ensure date column is datetime
+    if date_col in df.columns:
+        if df[date_col].dtype == 'object':
+            df[date_col] = pd.to_datetime(df[date_col])
+
+    # Calculate week_start for each date
+    freq = f'W-{week_anchor}'
+    df['week_start'] = df[date_col].dt.to_period(freq).dt.start_time
+
+    # Calculate day index relative to week (0-6)
+    df['day_index'] = (df[date_col] - df['week_start']).dt.days
+
+    return df
+
+
+def _add_hour_index(df, datetime_col, date_col):
+    """
+    Add hour_index column to a dataframe, representing the hour within each day.
+    Hour index starts from 0 for each day (per user if app_user_id exists).
+
+    Parameters:
+    - df: DataFrame with datetime information
+    - datetime_col: name of the datetime column
+    - date_col: name of the date column
+
+    Returns:
+    - DataFrame with added 'hour_index' column
+    """
+    if df is None or df.empty:
         return df
 
     df = df.copy()
 
-    if has_app_user_id:
-        # Process separately for each user to avoid handling across users
-        processed_dfs = []
-        for user_id, user_df in df.groupby('app_user_id'):
-            for col in health_cols:
-                if col in user_df.columns:
-                    if method == 'linear':
-                        # Linear interpolation for each user
-                        user_df[col] = user_df[col].interpolate(method='linear', limit_direction='both')
-                    elif method == 'fill':
-                        # Forward then backward fill for each user
-                        user_df[col] = user_df[col].ffill().bfill()
-            processed_dfs.append(user_df)
-
-        if processed_dfs:
-            df = pd.concat(processed_dfs, ignore_index=True)
+    # Calculate hour index relative to each user's day
+    if 'app_user_id' in df.columns:
+        df = df.sort_values(['app_user_id', datetime_col])
+        df['hour_index'] = df.groupby(['app_user_id', date_col]).cumcount()
     else:
-        # Process all data together if no user_id
-        for col in health_cols:
-            if col in df.columns:
-                if method == 'linear':
-                    df[col] = df[col].interpolate(method='linear', limit_direction='both')
-                elif method == 'fill':
-                    df[col] = df[col].ffill().bfill()
+        df = df.sort_values([datetime_col])
+        df['hour_index'] = df.groupby([date_col]).cumcount()
 
     return df
+
+
+def _apply_fill_method(df, health_cols, fill_method, has_app_user_id=True):
+    """
+    Apply the specified fill method to health data columns.
+
+    Parameters:
+    - df: DataFrame with health data
+    - health_cols: list of column names to fill
+    - fill_method: 'interpolate', 'ffill_bfill', or None
+    - has_app_user_id: whether the dataframe has an app_user_id column
+
+    Returns:
+    - DataFrame with filled values
+    """
+    if not fill_method or df is None or df.empty:
+        return df
+
+    df = df.copy()
+
+    if fill_method == 'interpolate':
+        # Use linear interpolation
+        if has_app_user_id:
+            interpolated_dfs = []
+            for user_id, user_df in df.groupby('app_user_id'):
+                for col in health_cols:
+                    if col in user_df.columns:
+                        user_df[col] = user_df[col].interpolate(method='linear', limit_direction='both')
+                interpolated_dfs.append(user_df)
+            if interpolated_dfs:
+                df = pd.concat(interpolated_dfs, ignore_index=True)
+        else:
+            for col in health_cols:
+                if col in df.columns:
+                    df[col] = df[col].interpolate(method='linear', limit_direction='both')
+
+    elif fill_method == 'ffill_bfill':
+        # Use forward fill then backward fill
+        if has_app_user_id:
+            filled_dfs = []
+            for user_id, user_df in df.groupby('app_user_id'):
+                for col in health_cols:
+                    if col in user_df.columns:
+                        user_df[col] = user_df[col].ffill().bfill()
+                filled_dfs.append(user_df)
+            if filled_dfs:
+                df = pd.concat(filled_dfs, ignore_index=True)
+        else:
+            for col in health_cols:
+                if col in df.columns:
+                    df[col] = df[col].ffill().bfill()
+
+    else:
+        raise ValueError(f"Invalid fill_method: {fill_method}. Use None, 'interpolate', or 'ffill_bfill'.")
+
+    return df
+
+
+def _merge_health_dataframes(dataframes_with_names, merge_key_cols):
+    """
+    Merge multiple health dataframes together using outer join.
+
+    Parameters:
+    - dataframes_with_names: list of tuples (df, column_name) where df is a processed dataframe
+      and column_name is the name to give to the value column
+    - merge_key_cols: list of column names to merge on (e.g., ['app_user_id', 'date'])
+
+    Returns:
+    - Merged DataFrame or None if all input dataframes are None
+    """
+    result = None
+
+    for df, col_name in dataframes_with_names:
+        if df is not None:
+            # Rename the value column (last column) to col_name
+            df = df.rename(columns={df.columns[-1]: col_name})
+
+            if result is None:
+                result = df
+            else:
+                result = result.merge(df, on=merge_key_cols, how='outer')
+
+    return result
 
 
 def weekly_avg_health_data(df, start_col='start_timestamp', target_col=None, week_anchor='MON', fill_missing=False, new_col_name='avg_daily_steps', app_user_id=-1, date_range=None):
@@ -273,7 +370,7 @@ def weekly_avg_calorie(df=calorie_data, **kwargs):
 
 def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data,
                            calorie_df=calorie_data, start_col='start_timestamp',
-                           week_anchor='MON', app_user_id=-1, null_method=None, date_range=None):
+                           week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
     """
     Calculate daily totals for steps, distance, calories and daily average for speed,
     while keeping the week_start date column for each day.
@@ -286,7 +383,10 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     - start_col: name of timestamp column (default 'start_timestamp')
     - week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
     - app_user_id: filter rows to this app_user_id; if -1, include all users
-    - null_method: method for handling null values - 'linear' for linear interpolation, 'fill' for forward/backward filling, None for no handling
+    - fill_method: method to fill null values. Options:
+        - None: leave null values as is
+        - 'interpolate': apply linear interpolation
+        - 'ffill_bfill': apply forward fill then backward fill
     - date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
 
     Returns:
@@ -297,73 +397,54 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     """
 
     # Process each health metric using the shared helper function
-    daily_steps = _process_health_dataframe(steps_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
-    daily_speed = _process_health_dataframe(speed_df, 'mean', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
-    daily_distance = _process_health_dataframe(distance_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
-    daily_calories = _process_health_dataframe(calorie_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
+    daily_steps = _process_passive_data_dataframe(steps_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
+    daily_speed = _process_passive_data_dataframe(speed_df, 'mean', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
+    daily_distance = _process_passive_data_dataframe(distance_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
+    daily_calories = _process_passive_data_dataframe(calorie_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
 
-    # Start with the first non-None dataframe
-    result = None
+    # Prepare dataframes for merging - rename time_key to date
+    dataframes_with_names = []
     for df, col_name in [(daily_steps, 'daily_steps'),
                           (daily_distance, 'daily_distance'),
                           (daily_calories, 'daily_calories'),
                           (daily_speed, 'daily_avg_speed')]:
         if df is not None:
-            # Rename time_key to date and value column to col_name
-            df = df.rename(columns={'time_key': 'date', df.columns[-1]: col_name})
-            if result is None:
-                result = df
-            else:
-                # Merge on app_user_id and date, or just date if no app_user_id
-                merge_cols = ['app_user_id', 'date'] if 'app_user_id' in result.columns else ['date']
-                result = result.merge(df, on=merge_cols, how='outer')
+            df = df.rename(columns={'time_key': 'date'})
+            dataframes_with_names.append((df, col_name))
+
+    # Determine merge columns
+    has_app_user_id = any(df is not None and 'app_user_id' in df.columns
+                          for df, _ in [(daily_steps, ''), (daily_speed, ''),
+                                       (daily_distance, ''), (daily_calories, '')])
+    merge_cols = ['app_user_id', 'date'] if has_app_user_id else ['date']
+
+    # Merge all dataframes
+    result = _merge_health_dataframes(dataframes_with_names, merge_cols)
 
     if result is None:
         return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index',
                                     'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed'])
 
-    # Convert date back to datetime for week calculation
+    # Convert date to datetime and add week metadata
     result['date'] = pd.to_datetime(result['date'])
-
-    # Calculate week_start for each date
-    # Week starts on the specified anchor day
-    freq = f'W-{week_anchor}'
-    result['week_start'] = result['date'].dt.to_period(freq).dt.start_time
-
-    # Calculate day index relative to each user's week (0-6)
-    # Day 0 is the first day of the week (based on week_anchor)
-    if 'app_user_id' in result.columns:
-        # For each user and week, calculate day index
-        result['day_index'] = (result['date'] - result['week_start']).dt.days
-    else:
-        # If no user ID, just calculate day index for all data
-        result['day_index'] = (result['date'] - result['week_start']).dt.days
+    result = _add_week_metadata(result, 'date', week_anchor)
 
     # Reorder columns
-    if 'app_user_id' in result.columns:
-        cols = ['app_user_id', 'date', 'week_start', 'day_index']
-    else:
-        cols = ['date', 'week_start', 'day_index']
-
-    for col in ['daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']:
-        if col in result.columns:
-            cols.append(col)
-
-    result = result[cols]
+    base_cols = ['app_user_id', 'date', 'week_start', 'day_index'] if has_app_user_id else ['date', 'week_start', 'day_index']
+    health_cols = [col for col in ['daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']
+                   if col in result.columns]
+    result = result[base_cols + health_cols]
 
     # Sort by app_user_id (if exists) and date
-    sort_cols = ['app_user_id', 'date'] if 'app_user_id' in result.columns else ['date']
+    sort_cols = ['app_user_id', 'date'] if has_app_user_id else ['date']
     result = result.sort_values(sort_cols).reset_index(drop=True)
 
-    # Apply null handling if requested
-    if null_method is not None:
-        health_cols = ['daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']
-        has_app_user_id = 'app_user_id' in result.columns
-        result = _apply_null_handling(result, health_cols, null_method, has_app_user_id)
+    # Apply fill method if requested
+    result = _apply_fill_method(result, health_cols, fill_method, has_app_user_id)
 
     return result
 
-def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data, cal_df=calorie_data, start_col='start_timestamp', week_anchor='MON', app_user_id=-1, null_method=None, date_range=None):
+def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=distance_data, cal_df=calorie_data, start_col='start_timestamp', week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
     """
     Calculate the hourly total steps, distance, calories and average speed for each user
     :param steps_df: DataFrame with steps data
@@ -373,8 +454,11 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
     :param start_col: name of timestamp column (default 'start_timestamp')
     :param week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
     :param app_user_id: filter rows to this app_user_id; if -1, include all users
-    :param null_method: method for handling null values - 'linear' for linear interpolation, 'fill' for forward/backward filling, None for no handling
     :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+    :param fill_method: method to fill null values. Options:
+        - None: leave null values as is
+        - 'interpolate': apply linear interpolation
+        - 'ffill_bfill': apply forward fill then backward fill
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
       Each row represents one user's hourly health metrics with the associated day and week.
@@ -383,76 +467,115 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
     """
 
     # Process each health metric using the shared helper function
-    hourly_steps = _process_health_dataframe(steps_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
-    hourly_speed = _process_health_dataframe(speed_df, 'mean', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
-    hourly_distance = _process_health_dataframe(distance_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
-    hourly_calories = _process_health_dataframe(cal_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
+    hourly_steps = _process_passive_data_dataframe(steps_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
+    hourly_speed = _process_passive_data_dataframe(speed_df, 'mean', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
+    hourly_distance = _process_passive_data_dataframe(distance_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
+    hourly_calories = _process_passive_data_dataframe(cal_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
 
-
-    # Start with the first non-None dataframe
-    result = None
+    # Prepare dataframes for merging - rename time_key to datetime
+    dataframes_with_names = []
     for df, col_name in [(hourly_steps, 'hourly_steps'),
                           (hourly_distance, 'hourly_distance'),
                           (hourly_calories, 'hourly_calories'),
                           (hourly_speed, 'hourly_avg_speed')]:
         if df is not None:
-            # Rename time_key to datetime and value column to col_name
-            df = df.rename(columns={'time_key': 'datetime', df.columns[-1]: col_name})
-            if result is None:
-                result = df
-            else:
-                # Merge on app_user_id and datetime, or just datetime if no app_user_id
-                merge_cols = ['app_user_id', 'datetime'] if 'app_user_id' in result.columns else ['datetime']
-                result = result.merge(df, on=merge_cols, how='outer')
+            df = df.rename(columns={'time_key': 'datetime'})
+            dataframes_with_names.append((df, col_name))
+
+    # Determine merge columns
+    has_app_user_id = any(df is not None and 'app_user_id' in df.columns
+                          for df, _ in [(hourly_steps, ''), (hourly_speed, ''),
+                                       (hourly_distance, ''), (hourly_calories, '')])
+    merge_cols = ['app_user_id', 'datetime'] if has_app_user_id else ['datetime']
+
+    # Merge all dataframes
+    result = _merge_health_dataframes(dataframes_with_names, merge_cols)
 
     if result is None:
         return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
                                     'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed'])
 
-    # Extract date from datetime
+    # Extract date from datetime and add week metadata
     result['date'] = result['datetime'].dt.date
     result['date'] = pd.to_datetime(result['date'])
+    result = _add_week_metadata(result, 'date', week_anchor)
 
-    # Calculate week_start for each date
-    freq = f'W-{week_anchor}'
-    result['week_start'] = result['date'].dt.to_period(freq).dt.start_time
-
-    # Calculate day index relative to each user's week (0-6)
-    if 'app_user_id' in result.columns:
-        result['day_index'] = (result['date'] - result['week_start']).dt.days
-    else:
-        result['day_index'] = (result['date'] - result['week_start']).dt.days
-
-    # Calculate hour index relative to each user's day
-    # For each user and day, calculate hour index starting from 0
-    if 'app_user_id' in result.columns:
-        # Group by user and date, then assign hour index
-        result = result.sort_values(['app_user_id', 'datetime'])
-        result['hour_index'] = result.groupby(['app_user_id', 'date']).cumcount()
-    else:
-        result = result.sort_values(['datetime'])
-        result['hour_index'] = result.groupby(['date']).cumcount()
+    # Add hour index
+    result = _add_hour_index(result, 'datetime', 'date')
 
     # Reorder columns
-    if 'app_user_id' in result.columns:
-        cols = ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index']
-    else:
-        cols = ['datetime', 'date', 'week_start', 'day_index', 'hour_index']
-
-    for col in ['hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']:
-        if col in result.columns:
-            cols.append(col)
-
-    result = result[cols]
+    base_cols = (['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index']
+                 if has_app_user_id else ['datetime', 'date', 'week_start', 'day_index', 'hour_index'])
+    health_cols = [col for col in ['hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
+                   if col in result.columns]
+    result = result[base_cols + health_cols]
 
     # Sort by app_user_id (if exists) and datetime
-    sort_cols = ['app_user_id', 'datetime'] if 'app_user_id' in result.columns else ['datetime']
+    sort_cols = ['app_user_id', 'datetime'] if has_app_user_id else ['datetime']
     result = result.sort_values(sort_cols).reset_index(drop=True)
 
-    # Apply null handling if requested
-    if null_method is not None:
-        health_cols = ['hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
-        has_app_user_id = 'app_user_id' in result.columns
-        result = _apply_null_handling(result, health_cols, null_method, has_app_user_id)
+    # Apply fill method if requested
+    result = _apply_fill_method(result, health_cols, fill_method, has_app_user_id)
+
+    return result
+
+def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None):
+    """
+    Calculate the hourly total screentime for each user
+    :param screentime_df: DataFrame with screentime data
+    :param start_col: name of timestamp column (default 'start_timestamp')
+    :param week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
+    :param app_user_id: filter rows to this app_user_id; if -1, include all users
+    :param fill_method: method to fill null values. Options:
+        - None: leave null values as is
+        - 'interpolate': apply linear interpolation
+        - 'ffill_bfill': apply forward fill then backward fill
+    :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+      'hourly_screentime']
+      Each row represents one user's hourly screentime with the associated day and week.
+      day_index is 0 for the first day of each week, 1 for the second, etc. hour_index is 0 for the first hour of the
+      day where a user has data, 1 for the second, etc.
+    """
+
+    # Process screentime using the shared helper function
+    hourly_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'H', start_col, app_user_id=app_user_id)
+
+    # Prepare dataframes for merging - rename time_key to datetime
+    dataframes_with_names = []
+    if hourly_screentime is not None:
+        hourly_screentime = hourly_screentime.rename(columns={'time_key': 'datetime'})
+        dataframes_with_names.append((hourly_screentime, 'hourly_screentime'))
+
+    # Determine if we have app_user_id
+    has_app_user_id = hourly_screentime is not None and 'app_user_id' in hourly_screentime.columns
+    merge_cols = ['app_user_id', 'datetime'] if has_app_user_id else ['datetime']
+
+    # Merge (in this case just one dataframe, but using the helper for consistency)
+    result = _merge_health_dataframes(dataframes_with_names, merge_cols)
+
+    if result is None:
+        return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+                                    'hourly_screentime'])
+
+    # Extract date from datetime and add week metadata
+    result['date'] = result['datetime'].dt.date
+    result['date'] = pd.to_datetime(result['date'])
+    result = _add_week_metadata(result, 'date', week_anchor)
+
+    # Add hour index
+    result = _add_hour_index(result, 'datetime', 'date')
+
+    # Reorder columns
+    base_cols = (['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index']
+                 if has_app_user_id else ['datetime', 'date', 'week_start', 'day_index', 'hour_index'])
+    screentime_cols = [col for col in ['hourly_screentime'] if col in result.columns]
+    result = result[base_cols + screentime_cols]
+
+    # Sort by app_user_id (if exists) and datetime
+    sort_cols = ['app_user_id', 'datetime'] if has_app_user_id else ['datetime']
+    result = result.sort_values(sort_cols).reset_index(drop=True)
+
+    # Apply fill method if requested
+    result = _apply_fill_method(result, screentime_cols, fill_method, has_app_user_id)
 
     return result
