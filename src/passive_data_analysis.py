@@ -579,3 +579,59 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
     result = _apply_fill_method(result, screentime_cols, fill_method, has_app_user_id)
 
     return result
+
+
+def daily_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
+    """
+    Calculate the daily total screentime for each user
+    :param screentime_df: DataFrame with screentime data
+    :param start_col: name of timestamp column (default 'start_time')
+    :param week_anchor: weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
+    :param app_user_id: filter rows to this app_user_id; if -1, include all users
+    :param fill_method: method to fill null values. Options:
+        - None: leave null values as is
+        - 'interpolate': apply linear interpolation
+        - 'ffill_bfill': apply forward fill then backward fill
+    :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+    :return: pandas df with columns ['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime']
+      Each row represents one user's daily screentime with the associated week.
+      day_index is 0 for the first day of each week, 1 for the second, etc.
+    """
+
+    # Process screentime using the shared helper function
+    daily_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'D', start_col, app_user_id=app_user_id, date_range=date_range)
+
+    # Prepare dataframes for merging - rename time_key to date
+    dataframes_with_names = []
+    if daily_screentime is not None:
+        daily_screentime = daily_screentime.rename(columns={'time_key': 'date'})
+        dataframes_with_names.append((daily_screentime, 'daily_screentime'))
+
+    # Determine if we have app_user_id
+    has_app_user_id = daily_screentime is not None and 'app_user_id' in daily_screentime.columns
+    merge_cols = ['app_user_id', 'date'] if has_app_user_id else ['date']
+
+    # Merge (in this case just one dataframe, but using the helper for consistency)
+    result = _merge_health_dataframes(dataframes_with_names, merge_cols)
+
+    if result is None:
+        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime'])
+
+    # Convert date to datetime and add week metadata
+    result['date'] = pd.to_datetime(result['date'])
+    result = _add_week_metadata(result, 'date', week_anchor)
+
+    # Reorder columns
+    base_cols = (['app_user_id', 'date', 'week_start', 'day_index']
+                 if has_app_user_id else ['date', 'week_start', 'day_index'])
+    screentime_cols = [col for col in ['daily_screentime'] if col in result.columns]
+    result = result[base_cols + screentime_cols]
+
+    # Sort by app_user_id (if exists) and date
+    sort_cols = ['app_user_id', 'date'] if has_app_user_id else ['date']
+    result = result.sort_values(sort_cols).reset_index(drop=True)
+
+    # Apply fill method if requested
+    result = _apply_fill_method(result, screentime_cols, fill_method, has_app_user_id)
+
+    return result
