@@ -401,27 +401,27 @@ class DatabaseService:
 
 
 def main():
+    pass
+    # print("PostgreSQL Audio Extractor")
+    # print("=" * 50)
 
-    print("PostgreSQL Audio Extractor")
-    print("=" * 50)
+    # extractor = DatabaseService(**db_config)
 
-    extractor = DatabaseService(**db_config)
-
-    print("Starting audio extraction from PostgreSQL...")
-    extracted_files = extractor.extract_all_audio(
-        table_name="audio_response",  # Update table name if different
-        limit=None,                   # Remove limit to process all records
-        convert_to_wav=False          # Also create WAV versions
-    )
-
-    print(f"\nExtraction complete!")
-    print(f"Total files extracted: {len(extracted_files)}")
-
-    if extracted_files:
-        print("\nExtracted files:")
-        for file_path in extracted_files:
-            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            print(f"  - {file_path} ({file_size:,} bytes)")
+    # print("Starting audio extraction from PostgreSQL...")
+    # extracted_files = extractor.extract_all_audio(
+    #     table_name="audio_response",  # Update table name if different
+    #     limit=None,                   # Remove limit to process all records
+    #     convert_to_wav=False          # Also create WAV versions
+    # )
+    #
+    # print(f"\nExtraction complete!")
+    # print(f"Total files extracted: {len(extracted_files)}")
+    #
+    # if extracted_files:
+    #     print("\nExtracted files:")
+    #     for file_path in extracted_files:
+    #         file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    #         print(f"  - {file_path} ({file_size:,} bytes)")
 
 if __name__ == "__main__":
     main()

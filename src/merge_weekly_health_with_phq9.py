@@ -1,6 +1,6 @@
 from torch.ao.nn.quantized.functional import interpolate
 
-from src.health_data_analysis import *
+from src.passive_data_analysis import *
 from src.categorization.PHQ9_categorization_binary import *
 import os
 from functools import reduce
@@ -98,7 +98,7 @@ def merge_weekly_health_with_phq9(phq9_df=phq9_data, week_anchor='MON', steps_on
 
     return merged_df
 
-def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_anchor='MON', interpolate=False):
+def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_anchor='MON', fill_method=None):
     """
     Merge daily health data with PHQ-9 depression labels.
 
@@ -118,7 +118,7 @@ def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_a
     """
     # If no daily health data provided, generate it
     if daily_health_df is None:
-        daily_health_df = daily_health_with_week(week_anchor=week_anchor, interpolate=interpolate)
+        daily_health_df = daily_health_with_week(week_anchor=week_anchor, fill_method=fill_method)
 
     if daily_health_df.empty:
         return daily_health_df
@@ -169,7 +169,7 @@ def merge_daily_health_with_phq9(daily_health_df=None, phq9_df=phq9_data, week_a
     return merged_df
 
 
-def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week_anchor='MON', interpolate=False):
+def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week_anchor='MON', fill_method=None):
     """
     Merge hourly health data with PHQ-9 depression labels.
 
@@ -189,7 +189,7 @@ def merge_hourly_health_with_phq9(hourly_health_df=None, phq9_df=phq9_data, week
     """
     # If no hourly health data provided, generate it
     if hourly_health_df is None:
-        hourly_health_df = hourly_health_data(week_anchor=week_anchor, interpolate=interpolate)
+        hourly_health_df = hourly_health_data(week_anchor=week_anchor, fill_method=None)
 
     if hourly_health_df.empty:
         return hourly_health_df
@@ -250,19 +250,19 @@ def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
 def main():
     # Create the combined dataset for modeling - weekly aggregated data
     print("Creating weekly aggregated health data with PHQ-9 labels...")
-    weekly_modeling_data = merge_weekly_health_with_phq9(steps_only=False)
+    weekly_modeling_data = merge_weekly_health_with_phq9()
     print(weekly_modeling_data.head(10))
     export_as_csv(weekly_modeling_data, 'weekly_health_and_phq9_data.csv')
 
     # Create daily aggregated health data with PHQ-9 labels
     print("\nCreating daily aggregated health data with PHQ-9 labels...")
-    daily_modeling_data = merge_daily_health_with_phq9(interpolate=True)
+    daily_modeling_data = merge_daily_health_with_phq9(fill_method=None)
     print(daily_modeling_data.head(10))
     export_as_csv(daily_modeling_data, 'daily_health_and_phq9_data.csv')
 
     # Create hourly aggregated health data with PHQ-9 labels
     print("\nCreating hourly aggregated health data with PHQ-9 labels...")
-    hourly_modeling_data = merge_hourly_health_with_phq9(interpolate=True)
+    hourly_modeling_data = merge_hourly_health_with_phq9(fill_method=None)
     print(hourly_modeling_data.head(10))
     export_as_csv(hourly_modeling_data, 'hourly_health_and_phq9_data.csv')
 

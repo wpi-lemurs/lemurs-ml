@@ -43,8 +43,9 @@ Fills missing values by carrying forward the last known value (forward fill), th
   - `'fill'`: Forward/backward filling
 
 **Example:**
+
 ```python
-from src.health_data_analysis import daily_health_with_week
+from src.passive_data_analysis import daily_health_with_week
 
 # No null handling (default)
 daily_data = daily_health_with_week(null_method=None)
@@ -71,8 +72,9 @@ daily_data_fill = daily_health_with_week(null_method='fill')
   - `'fill'`: Forward/backward filling
 
 **Example:**
+
 ```python
-from src.health_data_analysis import hourly_health_data
+from src.passive_data_analysis import hourly_health_data
 
 # No null handling (default)
 hourly_data = hourly_health_data(null_method=None)

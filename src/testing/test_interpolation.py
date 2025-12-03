@@ -1,7 +1,7 @@
 """
 Test script to demonstrate linear interpolation functionality for health data.
 """
-from src.health_data_analysis import daily_health_with_week, hourly_health_data
+from src.passive_data_analysis import daily_health_with_week, hourly_health_data
 import pandas as pd
 
 # Set display options to see all data
