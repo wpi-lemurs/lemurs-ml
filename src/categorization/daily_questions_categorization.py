@@ -15,7 +15,7 @@ def safe_int(x, default=None):
             return default
 
 def yesno_to_int(x):
-    # Converts a variety of boolean/yes-no representations to 1/0/None
+    # Converts boolean/yes-no representations to 1/0/None
     if x is None:
         return None
     if isinstance(x, bool):
@@ -339,24 +339,6 @@ def get_daily_labels_dataframe():
     df["sleep_label"] = df.apply(
         lambda r: sleep_label(r.get("sleep_hours"), r.get("sleep_quality")), axis=1
     )
-
-    # Overall label aggregator
-    # if any critical label is "at_risk" (suicide or self-harm) -> overall "high_concern"
-    # else if any label is "at_risk" -> "moderate_concern" else "low_concern"
-    def overall_label(row):
-        critical = ["suicide_risk_label", "self_harm_risk_label"]
-        other_labels = [
-            "positive_emotion_label","negative_emotion_label","social_stress_label",
-            "social_connection_label","minority_stress_label","emotion_regulation_label",
-            "sleep_label"
-        ]
-        if any(row.get(c) == "at_risk" for c in critical):
-            return "high_concern"
-        if any(row.get(l) == "at_risk" for l in other_labels):
-            return "moderate_concern"
-        return "low_concern"
-
-    df["overall_label"] = df.apply(overall_label, axis=1)
 
     return df
 
