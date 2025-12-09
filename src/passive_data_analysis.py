@@ -170,7 +170,7 @@ def _apply_fill_method(df, health_cols, fill_method, has_app_user_id=True):
     Parameters:
     - df: DataFrame with health data
     - health_cols: list of column names to fill
-    - fill_method: 'interpolate', 'ffill_bfill', or None
+    - fill_method: 'interpolate', 'ffill_bfill', 'zero', or None
     - has_app_user_id: whether the dataframe has an app_user_id column
 
     Returns:
@@ -213,8 +213,14 @@ def _apply_fill_method(df, health_cols, fill_method, has_app_user_id=True):
                 if col in df.columns:
                     df[col] = df[col].ffill().bfill()
 
+    elif fill_method == 'zero':
+        # Replace NaN with 0
+        for col in health_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+
     else:
-        raise ValueError(f"Invalid fill_method: {fill_method}. Use None, 'interpolate', or 'ffill_bfill'.")
+        raise ValueError(f"Invalid fill_method: {fill_method}. Use None, 'interpolate', 'ffill_bfill', or 'zero'.")
 
     return df
 
@@ -387,6 +393,7 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
         - None: leave null values as is
         - 'interpolate': apply linear interpolation
         - 'ffill_bfill': apply forward fill then backward fill
+        - 'zero': replace NaN with 0
     - date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
 
     Returns:
@@ -459,6 +466,7 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
         - None: leave null values as is
         - 'interpolate': apply linear interpolation
         - 'ffill_bfill': apply forward fill then backward fill
+        - 'zero': replace NaN with 0
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_steps', 'hourly_distance', 'hourly_calories', 'hourly_avg_speed']
       Each row represents one user's hourly health metrics with the associated day and week.
@@ -530,6 +538,7 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
         - None: leave null values as is
         - 'interpolate': apply linear interpolation
         - 'ffill_bfill': apply forward fill then backward fill
+        - 'zero': replace NaN with 0
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_screentime']
       Each row represents one user's hourly screentime with the associated day and week.
@@ -592,6 +601,7 @@ def daily_screentime_data(screentime_df=screentime_data, start_col='start_time',
         - None: leave null values as is
         - 'interpolate': apply linear interpolation
         - 'ffill_bfill': apply forward fill then backward fill
+        - 'zero': replace NaN with 0
     :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
     :return: pandas df with columns ['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime']
       Each row represents one user's daily screentime with the associated week.
