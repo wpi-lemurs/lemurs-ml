@@ -178,7 +178,7 @@ df[column].interpolate(method='linear', limit_direction='both')
 ## Example Usage in ML Pipeline
 
 ```python
-from src.merge_weekly_health_with_phq9 import merge_daily_health_with_phq9
+from src.merge_passive_data_and_labels import merge_daily_health_with_phq9
 
 # Generate complete training data with interpolation
 training_data = merge_daily_health_with_phq9(
