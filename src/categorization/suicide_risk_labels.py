@@ -1,7 +1,7 @@
 """
 Utility for extracting suicide-risk labels from the database and returning a DataFrame.
-This module intentionally focuses only on suicide-related questions (q2, q3, q5, q7, q12)
-and computes a binary label: "at_risk" / "not_at_risk".
+This module intentionally focuses only on suicide-related questions (q2, q3, q5, q7, q12).
+Note: q5 is a Likert-scale numeric item (treated like q2/q3/q7). The module computes a binary label: "at_risk" / "not_at_risk".
 
 Usage:
 from src.categorization.suicide_risk import get_suicide_risk_dataframe
@@ -33,9 +33,9 @@ def _is_valid(v) -> bool:
 
 def suicide_risk_label(q2: Optional[int], q3: Optional[int], q5: Optional[int], q7: Optional[int],
                        q12: Optional[int]) -> str:
-    if (_is_valid(q2) and int(q2) >= 2) or (_is_valid(q3) and int(q3) >= 2) or (_is_valid(q7) and int(q7) >= 2):
+    if any((_is_valid(v) and int(v) >= 2) for v in [q2, q3, q5, q7]):
         return "at_risk"
-    if any((v == 1) for v in [q5, q12] if _is_valid(v)):
+    if _is_valid(q12) and int(q12) == 1:
         return "at_risk"
     return "not_at_risk"
 
@@ -52,7 +52,7 @@ def get_suicide_risk_dataframe() -> pd.DataFrame:
         return pd.DataFrame()
     conn = db.connection
 
-    qids = [2, 3, 5, 7, 12]  # removed 8 and 13
+    qids = [2, 3, 5, 7, 12]
     qid_list_str = ",".join(str(q) for q in qids)
 
     sql = f"""
@@ -92,18 +92,18 @@ def get_suicide_risk_dataframe() -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Cast fields: q2, q3, q7 are numeric multiple-choice answers; convert robustly with pandas
-    numeric_cols = ["q2", "q3", "q7"]
+    # Cast fields: q2, q3, q7 are numeric multiple-choice / Likert answers
+    numeric_cols = ["q2", "q3", "q5", "q7"]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
 
-    yesno_cols = ["q5", "q12"]  # removed q8 and q13
+    # q12 is a yes/no field
+    yesno_cols = ["q12"]
     for col in yesno_cols:
         if col in df.columns:
             df[col] = df[col].apply(yesno_to_int)
 
-    # Use already-cast values directly; no safe_int calls
     df["suicide_risk_label"] = df.apply(
         lambda r: suicide_risk_label(
             r.get("q2"),
