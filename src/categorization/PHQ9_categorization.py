@@ -1,5 +1,9 @@
 import pandas as pd
+from src.config import DATA_DIR
 from database_service import DatabaseService, db_config
+
+# Use centralized data directory
+data_dir = DATA_DIR
 
 # Create DB service instance and connect
 db = DatabaseService(**db_config)
@@ -62,8 +66,10 @@ def categorize_phq9(score):
 
 df["severity_label"] = df["phq9_total_score"].apply(categorize_phq9)
 
-# Save to CSV for ML pipeline
-df.to_csv("phq9_labeled.csv", index=False)
+# Save to CSV for ML pipeline in data directory
+output_path = data_dir / "phq9_labeled.csv"
+df.to_csv(output_path, index=False)
 
-print("PHQ-9 labeling complete. Sample Data:")
+print(f"PHQ-9 labeling complete. Saved to: {output_path}")
+print("Sample Data:")
 print(df.head())

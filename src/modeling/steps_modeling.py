@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_auc_score
-from src.merge_weekly_health_with_phq9 import merge_weekly_health_with_phq9
+from src.data_processing.merge_passive_data_and_labels import merge_weekly_health_with_phq9
 
 modeling_data = merge_weekly_health_with_phq9(steps_only=False)
 
