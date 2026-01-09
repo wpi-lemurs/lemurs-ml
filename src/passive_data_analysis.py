@@ -1,5 +1,6 @@
 from src.database_service import DatabaseService
 import pandas as pd
+import numpy as np
 
 # Create db service instance
 service = DatabaseService()
@@ -14,6 +15,15 @@ calorie_data = service.extract_from_database("calorie")
 
 # Extract screentime
 screentime_data = service.extract_from_database("screentime")
+
+# Calculate screentime duration (end_time - start_time) in seconds
+# Add as 'value' column so _process_passive_data_dataframe can find it
+if 'start_time' in screentime_data.columns and 'end_time' in screentime_data.columns:
+    screentime_data = screentime_data.copy()
+    screentime_data['value'] = (
+        pd.to_datetime(screentime_data['end_time']) -
+        pd.to_datetime(screentime_data['start_time'])
+    ).dt.total_seconds()
 
 # Remove duplicate rows
 # unique_steps = steps_data.drop_duplicates(subset='start_timestamp')
@@ -527,7 +537,7 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
 
     return result
 
-def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None):
+def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
     """
     Calculate the hourly total screentime for each user
     :param screentime_df: DataFrame with screentime data
@@ -539,6 +549,7 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
         - 'interpolate': apply linear interpolation
         - 'ffill_bfill': apply forward fill then backward fill
         - 'zero': replace NaN with 0
+    :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_screentime']
       Each row represents one user's hourly screentime with the associated day and week.
@@ -547,7 +558,7 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
     """
 
     # Process screentime using the shared helper function
-    hourly_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'H', start_col, app_user_id=app_user_id)
+    hourly_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
 
     # Prepare dataframes for merging - rename time_key to datetime
     dataframes_with_names = []
@@ -645,3 +656,57 @@ def daily_screentime_data(screentime_df=screentime_data, start_col='start_time',
     result = _apply_fill_method(result, screentime_cols, fill_method, has_app_user_id)
 
     return result
+
+def daily_screentime_hourly_features(screentime_df=None, start_col='start_time', app_user_id=-1, fill_method='zero', date_range=None):
+    """
+    Create a DataFrame where each row is a user's screentime across one day,
+    with each hour (0-23) as a separate feature/column.
+
+    :param screentime_df: DataFrame with screentime data; if None, retrieves from database
+    :param start_col: name of timestamp column (default 'start_time')
+    :param app_user_id: filter rows to this app_user_id; if -1, include all users
+    :param fill_method: method to fill null values. Options:
+        - None: leave null values as is
+        - 'zero': replace NaN with 0 (default)
+        - 'interpolate': apply linear interpolation
+        - 'ffill_bfill': apply forward fill then backward fill
+    :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+    :return: pandas DataFrame with columns ['app_user_id', 'date', 'hour_0', 'hour_1', ..., 'hour_23']
+      Each hour_X column contains the total screentime (in seconds) for that hour of the day.
+    """
+    # Get hourly screentime data
+    hourly_data = hourly_screentime_data(screentime_df, start_col, 'MON', app_user_id, fill_method, date_range)
+
+    if hourly_data.empty:
+        # Return empty dataframe with expected columns
+        cols = ['app_user_id', 'date'] + [f'hour_{i}' for i in range(24)]
+        return pd.DataFrame(columns=cols)
+
+    # Pivot the data so each hour becomes a column
+    # Group by app_user_id and date, then pivot hour_index to columns
+    hourly_data['hour_col'] = 'hour_' + hourly_data['hour_index'].astype(str)
+
+    pivot_data = hourly_data.pivot_table(
+        index=['app_user_id', 'date'],
+        columns='hour_col',
+        values='hourly_screentime',
+        aggfunc='sum'
+    ).reset_index()
+
+    # Ensure all 24 hours exist as columns
+    for i in range(24):
+        col_name = f'hour_{i}'
+        if col_name not in pivot_data.columns:
+            pivot_data[col_name] = np.nan
+
+    # Order columns properly
+    hour_cols = [f'hour_{i}' for i in range(24)]
+    pivot_data = pivot_data[['app_user_id', 'date'] + hour_cols]
+
+    # Apply fill method to hour columns
+    if fill_method:
+        pivot_data = _apply_fill_method(pivot_data, hour_cols, fill_method, has_app_user_id=True)
+
+    # Sort by user and date
+    pivot_data = pivot_data.sort_values(['app_user_id', 'date']).reset_index(drop=True)
+    return pivot_data
