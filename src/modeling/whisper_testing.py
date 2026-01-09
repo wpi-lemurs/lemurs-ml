@@ -1,7 +1,11 @@
 import torch
 from transformers import pipeline, WhisperConfig, WhisperModel
 import pandas as pd
-import os
+from src.config import DATA_DIR, DB_AUDIO_DIR
+
+# Use centralized data directories
+data_dir = DATA_DIR
+audio_folder = DB_AUDIO_DIR
 
 # Check if CUDA is available, otherwise use CPU
 device = 0 if torch.cuda.is_available() else -1
@@ -27,24 +31,25 @@ configuration = WhisperConfig()
 model = WhisperModel(configuration)
 
 # Process audio files in the specified directory
-audio_folder = "data/db_extracted_audio"
-audio_files = [f for f in os.listdir(audio_folder) if f.endswith(".3gp")]
+audio_files = [f for f in audio_folder.iterdir() if f.suffix == ".3gp"]
 
 # Store transcriptions
 transcriptions = []
 
 # Iterate over audio files and transcribe
 for audio_file in audio_files:
-    audio_path = os.path.join(audio_folder, audio_file)
-    print(f"Processing: {audio_path}")
+    print(f"Processing: {audio_file}")
 
     try:
-        result = asr_pipeline(audio_path)
+        result = asr_pipeline(str(audio_file))
         text = result["text"]
         print(f"→ Transcription: {text}\n")
-        transcriptions.append({"file": audio_file, "transcription": text})
+        transcriptions.append({"file": audio_file.name, "transcription": text})
     except Exception as e:
-        print(f"Error processing {audio_file}: {e}")
+        print(f"Error processing {audio_file.name}: {e}")
 
-# Save results to a CSV file
-pd.DataFrame(transcriptions).to_csv("transcriptions.csv", index=False)
+# Save results to a CSV file in data directory
+output_path = data_dir / "transcriptions.csv"
+pd.DataFrame(transcriptions).to_csv(output_path, index=False)
+print(f"Transcriptions saved to: {output_path}")
+

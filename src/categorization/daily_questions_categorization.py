@@ -1,6 +1,10 @@
 import pandas as pd
 from datetime import datetime, timedelta
+from src.config import DATA_DIR
 from src.database_service import DatabaseService, db_config
+
+# Use centralized data directory
+data_dir = DATA_DIR
 
 # Utility converters / label functions
 def safe_int(x, default=None):
@@ -348,8 +352,8 @@ if __name__ == "__main__":
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', 200)
     df = get_daily_labels_dataframe()
-    # Save to CSV for pipeline / auditing
-    out_csv = "daily_labels.csv"
+    # Save to CSV for pipeline / auditing in data directory
+    out_csv = data_dir / "daily_labels.csv"
     df.to_csv(out_csv, index=False)
     print(f"Wrote {out_csv} — sample rows:")
     print(df.head(10).to_string(index=False))
