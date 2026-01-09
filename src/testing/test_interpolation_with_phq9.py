@@ -1,7 +1,7 @@
 """
 Test script to demonstrate linear interpolation with merged PHQ-9 data.
 """
-from src.merge_passive_data_and_labels import merge_daily_health_with_phq9, merge_hourly_health_with_phq9
+from src.data_processing.merge_passive_data_and_labels import merge_daily_health_with_phq9, merge_hourly_health_with_phq9
 import pandas as pd
 
 # Set display options
