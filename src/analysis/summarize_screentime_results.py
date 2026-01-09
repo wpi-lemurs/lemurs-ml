@@ -1,8 +1,8 @@
 import pandas as pd
-import os
+from src.config import DATA_DIR
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-data_dir = os.path.join(current_dir, 'data')
+# Use centralized data directory
+data_dir = DATA_DIR
 
 print("\n" + "="*80)
 print("SUMMARY: Screentime Features for Suicide Risk Prediction")
@@ -12,9 +12,9 @@ results = []
 
 for hours in [3, 6, 9, 12, 24]:
     filename = f'daily_screentime_suicide_risk_{hours}h.csv'
-    filepath = os.path.join(data_dir, filename)
+    filepath = data_dir / filename
 
-    if os.path.exists(filepath):
+    if filepath.exists():
         df = pd.read_csv(filepath)
 
         result = {

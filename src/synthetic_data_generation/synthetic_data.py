@@ -14,8 +14,12 @@ import pandas as pd
 import warnings #warning are annoying
 
 from src.database_service import DatabaseService
+from src.config import DATA_DIR
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="sdgx")
+
+# Use centralized data directory
+data_dir = DATA_DIR
 
 
 def generate_synthetic_data(df, num_samples, name):
@@ -50,12 +54,12 @@ def generate_synthetic_data(df, num_samples, name):
     formatter = DatetimeFormatter()
     new_df = formatter.convert_datetime_columns(datetime_formats.keys(), datetime_formats, df)
 
-    # convert df to csv
-    csv_path = "new_df.csv"
+    # convert df to csv in data directory
+    csv_path = data_dir / "temp_new_df.csv"
     new_df.to_csv(csv_path, index=False)
 
     # create data connector for csv file
-    data_connector = CsvConnector(path=csv_path)
+    data_connector = CsvConnector(path=str(csv_path))
 
     # initialize data loader
     dataloader = DataLoader(data_connector)
@@ -74,8 +78,10 @@ def generate_synthetic_data(df, num_samples, name):
     for col in datetime_formats.keys():
         sampled_data[col] = pd.to_datetime(sampled_data[col], unit='s')
 
-    # export as csv
-    sampled_data.to_csv(f"synthetic_{name}.csv", index=False)
+    # export as csv to data directory
+    output_path = data_dir / f"synthetic_{name}.csv"
+    sampled_data.to_csv(output_path, index=False)
+    print(f"Synthetic data saved to: {output_path}")
 
 # Create db service instance
 service = DatabaseService()

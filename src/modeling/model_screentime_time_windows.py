@@ -3,13 +3,17 @@ Model training script for suicide risk prediction using hourly screentime featur
 Experiments with different time windows (n hours before survey) to find optimal prediction window.
 """
 
-from src.merge_passive_data_and_labels import merge_daily_screentime_features_with_suicide_risk, export_as_csv
+from src.data_processing.merge_passive_data_and_labels import merge_daily_screentime_features_with_suicide_risk, export_as_csv
 from src.categorization.suicide_risk_labels import get_suicide_risk_dataframe
+from src.config import DATA_DIR
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, roc_auc_score, accuracy_score
+
+# Use centralized data directory
+data_dir = DATA_DIR
 
 def train_and_evaluate_models(data, time_window):
     """
@@ -201,8 +205,9 @@ def main():
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
 
         # Save results to CSV
-        comparison_df.to_csv('src/data/time_window_comparison_results.csv', index=False)
-        print(f"\nResults saved to: src/data/time_window_comparison_results.csv")
+        output_path = data_dir / 'time_window_comparison_results.csv'
+        comparison_df.to_csv(output_path, index=False)
+        print(f"\nResults saved to: {output_path}")
     else:
         print("\nNo results to compare. Insufficient data for all time windows.")
 

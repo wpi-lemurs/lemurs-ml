@@ -1,10 +1,11 @@
-from src.passive_data_analysis import *
+from src.data_processing.passive_data_analysis import *
 from src.categorization.PHQ9_categorization_binary import *
 from src.categorization.suicide_risk_labels import *
-import os
+from src.config import DATA_DIR
 from functools import reduce
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
+# No need to create data_dir here - it's already created in config.py
+data_dir = DATA_DIR
 
 # Load data with synthetic data paths (just for testing)
 # steps_data = pd.read_csv(os.path.join(current_dir, 'data', 'synthetic', 'synthetic_step_data.csv'))
@@ -326,7 +327,7 @@ def merge_hourly_screentime_with_suicide_risk(hourly_screentime_df=None, suicide
     """
     # If no hourly screentime data provided, generate it
     if hourly_screentime_df is None:
-        from src.passive_data_analysis import hourly_screentime_data
+        from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
                                                       app_user_id=app_user_id, date_range=date_range)
 
@@ -417,7 +418,7 @@ def merge_daily_screentime_features_with_suicide_risk(screentime_df=None, suicid
       where N = hours_before_survey - 1
       Each row represents the screentime in the n hours before a survey with the survey's suicide risk label.
     """
-    from src.passive_data_analysis import hourly_screentime_data
+    from src.data_processing.passive_data_analysis import hourly_screentime_data
 
     # Get hourly screentime data
     if screentime_df is None:
@@ -517,10 +518,18 @@ def merge_daily_screentime_features_with_suicide_risk(screentime_df=None, suicid
 
 
 def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
+    """
+    Export DataFrame to CSV in the project's data directory.
+
+    Parameters:
+    - df: DataFrame to export
+    - output_name: Name of the output CSV file
+    """
     # Export the combined dataset for modeling
-    output_path = os.path.join(current_dir, 'data', output_name)
+    output_path = data_dir / output_name
     df.to_csv(output_path, index=False)
     print(f"Modeling data saved to: {output_path}")
+
 
 
 def main():
