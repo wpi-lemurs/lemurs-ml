@@ -19,6 +19,50 @@ weekly_calorie = weekly_avg_calorie()
 weekly_distance = weekly_avg_distance()
 suicide_risk_data = get_suicide_risk_dataframe()
 
+def propagate_positive_labels(data, label_col, positive_class):
+    """
+    Propagate positive labels to all entries for users with at least one positive label.
+
+    This function treats any user who has been labeled as 'depressed' or 'at_risk'
+    at least once as having that label for ALL of their entries. This helps address
+    severe class imbalance when there are very few positive cases.
+
+    Parameters:
+    - data: DataFrame with merged health data and labels
+    - label_col: name of the label column (e.g., 'severity_label' or 'suicide_risk_label')
+    - positive_class: the positive class value to propagate (e.g., 'depressed' or 'at_risk')
+
+    Returns:
+    - DataFrame with propagated labels
+    """
+    if data.empty or label_col not in data.columns:
+        return data
+
+    data_copy = data.copy()
+
+    # Find users who have at least one positive label
+    users_with_positive_label = data_copy[
+        data_copy[label_col] == positive_class
+    ]['app_user_id'].unique()
+
+    print(f"\nLabel Propagation Summary:")
+    print(f"  Total unique users: {data_copy['app_user_id'].nunique()}")
+    print(f"  Users with at least one '{positive_class}' label: {len(users_with_positive_label)}")
+    print(f"  Original '{positive_class}' entries: {(data_copy[label_col] == positive_class).sum()}")
+
+    # Set all entries for these users to positive class
+    data_copy.loc[
+        data_copy['app_user_id'].isin(users_with_positive_label),
+        label_col
+    ] = positive_class
+
+    print(f"  After propagation '{positive_class}' entries: {(data_copy[label_col] == positive_class).sum()}")
+    print(f"  Label distribution after propagation:")
+    print(f"    {data_copy[label_col].value_counts().to_dict()}")
+
+    return data_copy
+
+
 def _prepare_phq9_weekly(phq9_df, week_anchor='MON'):
     """
     Helper function to prepare PHQ-9 data for merging with health data.
