@@ -7,7 +7,8 @@ Supports both PHQ-9 depression prediction and suicide risk prediction.
 from src.data_processing.merge_passive_data_and_labels import (
     merge_daily_screentime_features_with_suicide_risk,
     merge_daily_screentime_features_with_phq9,
-    export_as_csv
+    export_as_csv,
+    propagate_positive_labels
 )
 from src.config import DATA_DIR
 import pandas as pd
@@ -19,7 +20,7 @@ from sklearn.metrics import classification_report, roc_auc_score, accuracy_score
 # Use centralized data directory
 data_dir = DATA_DIR
 
-def train_and_evaluate_models(data, time_window, target_type='phq9'):
+def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -27,6 +28,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9'):
     - data: DataFrame with hourly screentime features and target labels
     - time_window: number of hours before survey (for reporting)
     - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
 
     Returns:
     - Dictionary with model performance metrics
@@ -50,8 +52,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9'):
     print(f"\nData Summary:")
     print(f"  Total rows: {len(data)}")
     print(f"  Unique users: {data['app_user_id'].nunique()}")
-    print(f"  Label distribution:")
+    print(f"  Label distribution (before propagation):")
     print(f"    {data[label_col].value_counts().to_dict()}")
+
+    # Apply label propagation if requested
+    if propagate_labels:
+        print(f"\n  Applying label propagation for users with at least one '{positive_class}' label...")
+        data = propagate_positive_labels(data, label_col, positive_class)
 
     # Export each time window separately
     export_as_csv(data, f'{output_prefix}_{time_window}h.csv')
@@ -162,13 +169,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9'):
 
 
 
-def main(target_type='phq9'):
+def main(target_type='phq9', propagate_labels=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
 
     Parameters:
     - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     """
     if target_type == 'phq9':
         task_name = "DEPRESSION PREDICTION (PHQ-9)"
@@ -180,6 +188,8 @@ def main(target_type='phq9'):
     print("="*80)
     print(f"{task_name} - HOURLY SCREENTIME FEATURES")
     print("Experimenting with different time windows for screentime before surveys...")
+    if propagate_labels:
+        print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
     print("="*80)
 
     # Time windows to experiment with (in hours)
@@ -200,7 +210,7 @@ def main(target_type='phq9'):
         )
 
         # Train and evaluate models
-        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type)
+        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels)
         if results:
             all_results.append(results)
 
