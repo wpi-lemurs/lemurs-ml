@@ -76,35 +76,78 @@ def normalize_timestamp_column(df: pd.DataFrame, possible_cols=None):
 
 
 def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
-    """Return DataFrame with rows (app_user_id, day_index) and counts for each day index 1..STUDY_DAYS.
+    """Return DataFrame with rows (app_user_id, day_index) and total steps for each day index 1..STUDY_DAYS.
     Also add a 'date' column that maps each day index to the calendar date (study_start + day-1).
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
     if app_user_col not in df.columns:
-        # treat entire dataset as single user
         df['app_user_id'] = 'all'
         app_user_col = 'app_user_id'
 
-    # drop rows without timestamps
     df = df.dropna(subset=[timestamp_col]).copy()
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
-    # determine study_start: earliest timestamp per user or global
     if study_start is None:
-        # align to the earliest date across dataset
         min_ts = df[timestamp_col].min().normalize()
         study_start = min_ts
     else:
         study_start = pd.to_datetime(study_start).normalize()
 
-    # compute day index 1..STUDY_DAYS
     df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
-    # keep only days within 1..STUDY_DAYS
     df = df[(df['day'] >= 1) & (df['day'] <= STUDY_DAYS)]
 
+    # Find step count column
+    numeric_cols = df.select_dtypes(include='number').columns.tolist()
+    step_col = [c for c in numeric_cols if c not in ('day', 'app_user_id')]
+    step_col = step_col[0] if step_col else None
+
+    # Sum steps per day instead of counting records
+    if step_col:
+        grouped = df.groupby([app_user_col, 'day'])[step_col].sum().reset_index(name='count')
+    else:
+        grouped = df.groupby([app_user_col, 'day']).size().reset_index(name='count')
+
+    # ensure all day rows exist for each user (fill missing days with 0) and attach date
+    users = grouped[app_user_col].unique().tolist()
+    all_rows = []
+    for u in users:
+        user_days = grouped[grouped[app_user_col] == u].set_index('day')['count']
+        for d in range(1, STUDY_DAYS + 1):
+            cnt = int(user_days.get(d, 0))
+            date_for_d = (pd.to_datetime(study_start) + pd.Timedelta(days=d-1)).date()
+            all_rows.append({app_user_col: u, 'day': d, 'count': cnt, 'date': date_for_d})
+    result = pd.DataFrame(all_rows)
+    return result
+
+
+def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
+    """Return DataFrame with rows (app_user_id, day_index) and count of records for each day index 1..STUDY_DAYS.
+    Also add a 'date' column that maps each day index to the calendar date (study_start + day-1).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
+
+    if app_user_col not in df.columns:
+        df['app_user_id'] = 'all'
+        app_user_col = 'app_user_id'
+
+    df = df.dropna(subset=[timestamp_col]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
+
+    if study_start is None:
+        min_ts = df[timestamp_col].min().normalize()
+        study_start = min_ts
+    else:
+        study_start = pd.to_datetime(study_start).normalize()
+
+    df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
+    df = df[(df['day'] >= 1) & (df['day'] <= STUDY_DAYS)]
+
+    # Count records per day (not sum of values)
     grouped = df.groupby([app_user_col, 'day']).size().reset_index(name='count')
 
     # ensure all day rows exist for each user (fill missing days with 0) and attach date
@@ -189,62 +232,49 @@ def plot_three_timelines(daily_counts: pd.DataFrame, users, app_user_col='app_us
 
 
 def hourly_average_across_users(df: pd.DataFrame, timestamp_col: str, app_user_col='app_user_id'):
-    """Return DataFrame with hour (0..23) and avg_records_per_user and avg_value_per_user (if numeric value present).
-    avg_records_per_user: average number of records recorded in that hour across users (per day-hour aggregated).
+    """Return DataFrame with hour (0..23) and total_records_per_user and total_value_per_user (if numeric value present).
+    Returns totals across all users for each hour.
     """
     if df is None or df.empty:
-        return pd.DataFrame(columns=['hour', 'avg_records_per_user'])
+        return pd.DataFrame(columns=['hour', 'total_records'])
 
     if app_user_col not in df.columns:
         df['app_user_id'] = 'all'
 
     df = df.dropna(subset=[timestamp_col]).copy()
     df['hour'] = df[timestamp_col].dt.hour
-    df['date'] = df[timestamp_col].dt.date
 
-    # per user-day-hour counts
-    per_user_hour = df.groupby(['app_user_id', 'date', 'hour']).size().reset_index(name='count')
+    # Count total records per hour
+    hourly_counts = df.groupby('hour').size().reset_index(name='total_records')
 
-    # average across days per user -> mean count per hour per user
-    mean_per_user_hour = per_user_hour.groupby(['app_user_id', 'hour'])['count'].mean().reset_index()
-
-    # now average across users
-    avg_across_users = mean_per_user_hour.groupby('hour')['count'].mean().reset_index(name='avg_records_per_user')
-
-    # optionally compute avg steps/value if a numeric column exists
+    # Sum steps/value if numeric column exists
     numeric_cols = df.select_dtypes(include='number').columns.tolist()
     numeric_cols = [c for c in numeric_cols if c not in ('hour',)]
     if numeric_cols:
         val_col = numeric_cols[0]
-        per_user_hour_val = df.groupby(['app_user_id', 'date', 'hour'])[val_col].mean().reset_index(name='val')
-        mean_per_user_hour_val = per_user_hour_val.groupby(['app_user_id', 'hour'])['val'].mean().reset_index()
-        avg_val_across_users = mean_per_user_hour_val.groupby('hour')['val'].mean().reset_index(name='avg_value')
-        avg_across_users = avg_across_users.merge(avg_val_across_users, on='hour', how='left')
+        hourly_values = df.groupby('hour')[val_col].sum().reset_index(name='total_value')
+        hourly_counts = hourly_counts.merge(hourly_values, on='hour', how='left')
 
-    # ensure hours 0..23 present
     hours = pd.DataFrame({'hour': list(range(24))})
-    avg_across_users = hours.merge(avg_across_users, on='hour', how='left').fillna(0)
-    return avg_across_users
+    hourly_counts = hours.merge(hourly_counts, on='hour', how='left').fillna(0)
+    return hourly_counts
 
 
 def hourly_average_for_users(df: pd.DataFrame, users: list, timestamp_col: str, app_user_col='app_user_id'):
-    """Return DataFrame with hour (0..23), user, avg_records and avg_steps for specified users.
-    Returns one row per (user, hour) combination.
+    """Return DataFrame with hour (0..23), user, total_records and total_steps for specified users.
+    Returns one row per (user, hour) combination with totals across all days.
     """
     if df is None or df.empty:
-        return pd.DataFrame(columns=['user', 'hour', 'avg_records', 'avg_steps'])
+        return pd.DataFrame(columns=['user', 'hour', 'total_records', 'total_steps'])
 
-    # Filter to specified users
     df = df[df[app_user_col].isin(users)].copy()
 
     if df.empty:
-        return pd.DataFrame(columns=['user', 'hour', 'avg_records', 'avg_steps'])
+        return pd.DataFrame(columns=['user', 'hour', 'total_records', 'total_steps'])
 
     df = df.dropna(subset=[timestamp_col]).copy()
     df['hour'] = df[timestamp_col].dt.hour
-    df['date'] = df[timestamp_col].dt.date
 
-    # Find the numeric column for steps (could be 'step_count', 'steps', 'value', etc.)
     numeric_cols = df.select_dtypes(include='number').columns.tolist()
     numeric_cols = [c for c in numeric_cols if c not in ('hour', 'app_user_id')]
     step_col = numeric_cols[0] if numeric_cols else None
@@ -254,27 +284,19 @@ def hourly_average_for_users(df: pd.DataFrame, users: list, timestamp_col: str, 
     for user in users:
         user_df = df[df[app_user_col] == user]
 
-        # Per day-hour: count records and average steps
-        per_day_hour = user_df.groupby(['date', 'hour']).agg({
-            timestamp_col: 'count',  # count records
-            step_col: 'mean' if step_col else lambda x: 0  # average steps
+        # Sum records and steps per hour (across all days)
+        per_hour = user_df.groupby('hour').agg({
+            timestamp_col: 'count',  # total count of records
+            step_col: 'sum' if step_col else lambda x: 0  # total steps
         }).reset_index()
-        per_day_hour.columns = ['date', 'hour', 'record_count', 'avg_steps']
-
-        # Average across all days for this user
-        per_hour = per_day_hour.groupby('hour').agg({
-            'record_count': 'mean',
-            'avg_steps': 'mean'
-        }).reset_index()
-
+        per_hour.columns = ['hour', 'total_records', 'total_steps']
         per_hour['user'] = user
         results.append(per_hour)
 
     if not results:
-        return pd.DataFrame(columns=['user', 'hour', 'avg_records', 'avg_steps'])
+        return pd.DataFrame(columns=['user', 'hour', 'total_records', 'total_steps'])
 
     combined = pd.concat(results, ignore_index=True)
-    combined.columns = ['hour', 'avg_records', 'avg_steps', 'user']
 
     # Ensure all hours 0..23 present for each user
     all_rows = []
@@ -282,7 +304,7 @@ def hourly_average_for_users(df: pd.DataFrame, users: list, timestamp_col: str, 
         for hour in range(24):
             user_hour = combined[(combined['user'] == user) & (combined['hour'] == hour)]
             if user_hour.empty:
-                all_rows.append({'user': user, 'hour': hour, 'avg_records': 0, 'avg_steps': 0})
+                all_rows.append({'user': user, 'hour': hour, 'total_records': 0, 'total_steps': 0})
             else:
                 all_rows.append(user_hour.iloc[0].to_dict())
 
@@ -290,23 +312,21 @@ def hourly_average_for_users(df: pd.DataFrame, users: list, timestamp_col: str, 
 
 
 def plot_hourly_average(avg_df: pd.DataFrame, out_path: Path = Path('passive_hourly_average.png')):
-    """Plot hourly averages with values displayed on bars."""
+    """Plot hourly totals with values displayed on bars."""
     plt.figure(figsize=(16, 8))
 
-    # Create bar chart
-    bars = plt.bar(avg_df['hour'], avg_df['avg_records_per_user'],
+    bars = plt.bar(avg_df['hour'], avg_df['total_records'],
                    width=0.8, color='#2E86AB', alpha=0.7, edgecolor='black')
 
-    # Add value labels on top of each bar
-    for idx, (hour, val) in enumerate(zip(avg_df['hour'], avg_df['avg_records_per_user'])):
-        if val > 0:  # Only show non-zero values
-            plt.text(hour, val, f'{val:.1f}',
+    for idx, (hour, val) in enumerate(zip(avg_df['hour'], avg_df['total_records'])):
+        if val > 0:
+            plt.text(hour, val, f'{int(val)}',
                     ha='center', va='bottom', fontsize=9,
                     fontweight='bold', color='#2E86AB')
 
     plt.xlabel('Hour of Day (24-hour format)', fontsize=12, fontweight='bold')
-    plt.ylabel('Average Records per User', fontsize=12, fontweight='bold')
-    plt.title('Average Number of Recordings per Hour Across All Users',
+    plt.ylabel('Total Records', fontsize=12, fontweight='bold')
+    plt.title('Total Number of Recordings per Hour Across All Users',
              fontsize=14, fontweight='bold', pad=20)
     plt.xticks(range(0, 24), [f'{h:02d}:00' for h in range(24)], rotation=45)
     plt.grid(axis='y', alpha=0.3, linestyle='--')
@@ -317,46 +337,41 @@ def plot_hourly_average(avg_df: pd.DataFrame, out_path: Path = Path('passive_hou
 
 
 def plot_hourly_records_by_user(hourly_df: pd.DataFrame, users: list, out_path: Path = Path('passive_hourly_records_by_user.png')):
-    """Plot hourly record counts for three users."""
+    """Plot hourly total record counts for three users."""
     fig, ax = plt.subplots(figsize=(18, 8))
 
-    colors = ['#228B22', '#C71585', '#F18F01']  # Forest Green, Dark Pink, Orange
+    colors = ['#228B22', '#C71585', '#F18F01']
     labels = ['Most Complete', 'Median', 'Least Complete']
 
-    # Plot lines for each user
     for idx, user in enumerate(users):
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
-        # Plot record counts
-        ax.plot(user_df['hour'], user_df['avg_records'],
+        ax.plot(user_df['hour'], user_df['total_records'],
                 marker='o', markersize=8, linewidth=2.5,
                 color=colors[idx], label=f'{labels[idx]}: {user}',
                 alpha=0.8, linestyle='-')
 
-        # Add text labels for each hour - increased vertical offset
         for _, row in user_df.iterrows():
-            if row['avg_records'] > 0:
-                min_offset = 0.15
-                rel_offset = min(row['avg_records'] * 0.10, 1.5)
-                stagger = 0.25 * idx
-                y = row['avg_records'] + min_offset + rel_offset + stagger
+            if row['total_records'] > 0:
+                min_offset = 0.5
+                rel_offset = min(row['total_records'] * 0.08, 3.0)
+                stagger = 0.5 * idx
+                y = row['total_records'] + min_offset + rel_offset + stagger
 
                 ax.text(
-                    row['hour'], y, f"{row['avg_records']:.1f}",
+                    row['hour'], y, f"{int(row['total_records'])}",
                     ha='center', va='bottom', fontsize=8,
                     color=colors[idx], fontweight='bold',
                     alpha=0.85, zorder=5,
                     bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.7)
                 )
 
-    # Configure axes
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Records per Hour', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Records per Hour', fontsize=12, fontweight='bold')
 
-    plt.title('Hourly Record Counts by User Completeness Level',
+    plt.title('Hourly Total Record Counts by User Completeness Level',
              fontsize=14, fontweight='bold', pad=20)
 
-    # Set x-axis ticks
     ax.set_xticks(range(0, 24))
     ax.set_xticklabels([f'{h:02d}:00' for h in range(24)], rotation=45, ha='right')
 
@@ -368,47 +383,43 @@ def plot_hourly_records_by_user(hourly_df: pd.DataFrame, users: list, out_path: 
     plt.close()
     return out_path
 
+
 def plot_hourly_steps_by_user(hourly_df: pd.DataFrame, users: list, out_path: Path = Path('passive_hourly_steps_by_user.png')):
-    """Plot hourly average steps for three users."""
+    """Plot hourly total steps for three users."""
     fig, ax = plt.subplots(figsize=(18, 8))
 
-    colors = ['#228B22', '#C71585', '#F18F01']  # Forest Green, Dark Pink, Orange
+    colors = ['#228B22', '#C71585', '#F18F01']
     labels = ['Most Complete', 'Median', 'Least Complete']
 
-    # Plot lines for each user
     for idx, user in enumerate(users):
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
-        # Plot average steps
-        ax.plot(user_df['hour'], user_df['avg_steps'],
+        ax.plot(user_df['hour'], user_df['total_steps'],
                 marker='s', markersize=8, linewidth=2.5,
                 color=colors[idx], label=f'{labels[idx]}: {user}',
                 alpha=0.8, linestyle='-')
 
-        # Add text labels for each hour - increased vertical offset
         for _, row in user_df.iterrows():
-            if row['avg_steps'] > 1:
-                min_offset = 5
-                rel_offset = min(row['avg_steps'] * 0.06, 25)
-                stagger = 15 * idx
-                y = row['avg_steps'] + min_offset + rel_offset + stagger
+            if row['total_steps'] > 10:
+                min_offset = 10
+                rel_offset = min(row['total_steps'] * 0.05, 50)
+                stagger = 30 * idx
+                y = row['total_steps'] + min_offset + rel_offset + stagger
 
                 ax.text(
-                    row['hour'], y, f"{row['avg_steps']:.0f}",
+                    row['hour'], y, f"{int(row['total_steps'])}",
                     ha='center', va='bottom', fontsize=8,
                     color=colors[idx], fontweight='bold',
                     alpha=0.85, zorder=5,
                     bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.7)
                 )
 
-    # Configure axes
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Steps per Hour', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Steps per Hour', fontsize=12, fontweight='bold')
 
-    plt.title('Hourly Average Steps by User Completeness Level',
+    plt.title('Hourly Total Steps by User Completeness Level',
              fontsize=14, fontweight='bold', pad=20)
 
-    # Set x-axis ticks
     ax.set_xticks(range(0, 24))
     ax.set_xticklabels([f'{h:02d}:00' for h in range(24)], rotation=45, ha='right')
 
@@ -438,20 +449,24 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
                 marker='o', markersize=4, linewidth=1.5,
                 color=colors[idx], label=f'{user}', alpha=0.7)
 
-        # Add count labels above each point
+        # Add count labels above each point using adaptive offset
         for _, row in user_df.iterrows():
-            if row['count'] > 0:  # Only show non-zero values
-                min_offset = 10
-                rel_offset = min(row['count'] * 0.03, 50)
-                stagger = 20 * (idx % 3)  # Stagger labels for overlapping users
-                y = row['count'] + min_offset + rel_offset + stagger
+            if row['count'] > 0:
+                # Adaptive offset: min absolute + capped relative
+                min_offset = 0.5
+                rel_offset = min(row['count'] * 0.08, 3.0)
+                y = row['count'] + min_offset + rel_offset
 
                 plt.text(
-                    row['day'], y, str(int(row['count'])),
-                    ha='center', va='bottom', fontsize=6,
-                    color=colors[idx], fontweight='bold',
-                    alpha=0.75, zorder=5,
-                    bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.6)
+                    row['day'], y, f"{int(row['count'])}",
+                    ha='center', va='bottom',
+                    fontsize=6,
+                    color=colors[idx],
+                    fontweight='bold',
+                    alpha=0.7,
+                    zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.1',
+                              fc='white', ec='none', alpha=0.6)
                 )
 
     plt.xlabel('Date', fontsize=12, fontweight='bold')
@@ -464,7 +479,69 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
               bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
     plt.grid(True, alpha=0.3, linestyle='--')
 
-    # Build xtick labels with dates only (MM-DD format)
+    # Build xtick labels with dates only
+    days = list(range(1, STUDY_DAYS + 1))
+    if 'date' in daily_counts.columns:
+        date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
+        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if date_map.get(d) else '' for d in days]
+    else:
+        xtick_labels = [str(d) for d in days]
+
+    plt.xticks(days, xtick_labels, rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return out_path
+
+
+def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_user_id', out_path: Path = Path('passive_all_users_daily_records.png')):
+    """Plot timelines for ALL users showing daily record counts.
+    X-axis shows calendar date only (MM-DD format).
+    """
+    plt.figure(figsize=(18, 10))
+
+    all_users = daily_counts[app_user_col].unique()
+    colors = plt.cm.tab20(np.linspace(0, 1, len(all_users)))
+
+    for idx, user in enumerate(all_users):
+        user_df = daily_counts[daily_counts[app_user_col] == user].sort_values('day')
+
+        # Plot line with smaller markers for readability
+        plt.plot(user_df['day'], user_df['count'],
+                marker='o', markersize=4, linewidth=1.5,
+                color=colors[idx], label=f'{user}', alpha=0.7)
+
+        # Add count labels above each point using adaptive offset
+        for _, row in user_df.iterrows():
+            if row['count'] > 0:
+                # Adaptive offset: min absolute + capped relative
+                min_offset = 0.5
+                rel_offset = min(row['count'] * 0.08, 3.0)
+                y = row['count'] + min_offset + rel_offset
+
+                plt.text(
+                    row['day'], y, f"{int(row['count'])}",
+                    ha='center', va='bottom',
+                    fontsize=6,
+                    color=colors[idx],
+                    fontweight='bold',
+                    alpha=0.7,
+                    zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.1',
+                              fc='white', ec='none', alpha=0.6)
+                )
+
+    plt.xlabel('Date', fontsize=12, fontweight='bold')
+    plt.ylabel('Total Records', fontsize=12, fontweight='bold')
+    plt.title('Daily Record Counts for All Participants',
+             fontsize=14, fontweight='bold', pad=20)
+
+    # Place legend outside plot area
+    plt.legend(title='Participant ID', fontsize=8, title_fontsize=10,
+              bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
+    plt.grid(True, alpha=0.3, linestyle='--')
+
+    # Build xtick labels with dates only
     days = list(range(1, STUDY_DAYS + 1))
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
@@ -480,7 +557,7 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
 
 
 def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path('passive_all_users_hourly_records.png')):
-    """Plot hourly record counts for ALL users."""
+    """Plot hourly total record counts for ALL users."""
     fig, ax = plt.subplots(figsize=(18, 10))
 
     all_users = hourly_df['user'].unique()
@@ -489,21 +566,20 @@ def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path
     for idx, user in enumerate(all_users):
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
-        ax.plot(user_df['hour'], user_df['avg_records'],
+        ax.plot(user_df['hour'], user_df['total_records'],
                 marker='o', markersize=4, linewidth=1.5,
                 color=colors[idx], label=f'{user}',
                 alpha=0.7, linestyle='-')
 
-        # Add text labels for each hour
         for _, row in user_df.iterrows():
-            if row['avg_records'] > 0.1:  # Only show significant values
-                min_offset = 0.1
-                rel_offset = min(row['avg_records'] * 0.05, 0.5)
-                stagger = 0.15 * (idx % 3)
-                y = row['avg_records'] + min_offset + rel_offset + stagger
+            if row['total_records'] > 0.5:
+                min_offset = 0.3
+                rel_offset = min(row['total_records'] * 0.04, 1.0)
+                stagger = 0.3 * (idx % 3)
+                y = row['total_records'] + min_offset + rel_offset + stagger
 
                 ax.text(
-                    row['hour'], y, f"{row['avg_records']:.1f}",
+                    row['hour'], y, f"{int(row['total_records'])}",
                     ha='center', va='bottom', fontsize=6,
                     color=colors[idx], fontweight='bold',
                     alpha=0.75, zorder=5,
@@ -511,9 +587,9 @@ def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path
                 )
 
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Records per Hour', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Records per Hour', fontsize=12, fontweight='bold')
 
-    plt.title('Hourly Record Counts for All Participants',
+    plt.title('Hourly Total Record Counts for All Participants',
              fontsize=14, fontweight='bold', pad=20)
 
     ax.set_xticks(range(0, 24))
@@ -530,7 +606,7 @@ def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path
 
 
 def plot_all_users_hourly_steps(hourly_df: pd.DataFrame, out_path: Path = Path('passive_all_users_hourly_steps.png')):
-    """Plot hourly average steps for ALL users."""
+    """Plot hourly total steps for ALL users."""
     fig, ax = plt.subplots(figsize=(18, 10))
 
     all_users = hourly_df['user'].unique()
@@ -539,21 +615,20 @@ def plot_all_users_hourly_steps(hourly_df: pd.DataFrame, out_path: Path = Path('
     for idx, user in enumerate(all_users):
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
-        ax.plot(user_df['hour'], user_df['avg_steps'],
+        ax.plot(user_df['hour'], user_df['total_steps'],
                 marker='s', markersize=4, linewidth=1.5,
                 color=colors[idx], label=f'{user}',
                 alpha=0.7, linestyle='-')
 
-        # Add text labels for each hour
         for _, row in user_df.iterrows():
-            if row['avg_steps'] > 1:  # Only show significant values
-                min_offset = 3
-                rel_offset = min(row['avg_steps'] * 0.04, 15)
-                stagger = 10 * (idx % 3)
-                y = row['avg_steps'] + min_offset + rel_offset + stagger
+            if row['total_steps'] > 10:
+                min_offset = 10
+                rel_offset = min(row['total_steps'] * 0.03, 30)
+                stagger = 20 * (idx % 3)
+                y = row['total_steps'] + min_offset + rel_offset + stagger
 
                 ax.text(
-                    row['hour'], y, f"{row['avg_steps']:.0f}",
+                    row['hour'], y, f"{int(row['total_steps'])}",
                     ha='center', va='bottom', fontsize=6,
                     color=colors[idx], fontweight='bold',
                     alpha=0.75, zorder=5,
@@ -561,9 +636,9 @@ def plot_all_users_hourly_steps(hourly_df: pd.DataFrame, out_path: Path = Path('
                 )
 
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
-    ax.set_ylabel('Average Steps per Hour', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Steps per Hour', fontsize=12, fontweight='bold')
 
-    plt.title('Hourly Average Steps for All Participants',
+    plt.title('Hourly Total Steps for All Participants',
              fontsize=14, fontweight='bold', pad=20)
 
     ax.set_xticks(range(0, 24))
@@ -665,7 +740,7 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
                        if date_map.get(d + 1) else '' for d in range(STUDY_DAYS)]
         ax.set_xticklabels(date_labels, rotation=45, ha='right')
 
-    ax.set_xlabel('Day', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
     ax.set_ylabel('Participant ID', fontsize=12, fontweight='bold')
     ax.set_title('Daily Data Availability Heatmap', fontsize=14, fontweight='bold', pad=20)
 
@@ -677,6 +752,83 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
     ax.set_xticks([x - 0.5 for x in range(1, STUDY_DAYS)], minor=True)
     ax.set_yticks([y - 0.5 for y in range(1, len(binary_data))], minor=True)
     ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return out_path
+
+
+def plot_daily_participation(daily_counts: pd.DataFrame, app_user_col='app_user_id',
+                            out_path: Path = Path('steps_daily_participation.png')):
+    """Plot number of participants with data each day."""
+    daily_participation = daily_counts[daily_counts['count'] > 0].groupby('day')[app_user_col].nunique()
+    total_users = daily_counts[app_user_col].nunique()
+
+    fig, ax = plt.subplots(figsize=(16, 8))
+
+    bars = ax.bar(daily_participation.index, daily_participation.values,
+                  color='#2E86AB', alpha=0.7, edgecolor='black')
+
+    # Add count labels only (removed percentage)
+    for day, count in zip(daily_participation.index, daily_participation.values):
+        ax.text(day, count, f'{count}',
+               ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    # Add total participants annotation in top-right corner
+    ax.text(0.98, 0.98, f'Total Participants = {total_users}',
+            transform=ax.transAxes,
+            ha='right', va='top',
+            fontsize=11, fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='black', alpha=0.8))
+
+    # Add date labels if available
+    if 'date' in daily_counts.columns:
+        date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
+        date_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d')
+                       if date_map.get(d) else '' for d in range(1, STUDY_DAYS + 1)]
+        ax.set_xticks(range(1, STUDY_DAYS + 1))
+        ax.set_xticklabels(date_labels, rotation=45, ha='right')
+
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Number of Participants', fontsize=12, fontweight='bold')
+    ax.set_title('Daily Participant Data Availability', fontsize=14, fontweight='bold', pad=20)
+    ax.set_ylim(0, 6)  # Set y-axis to go up to 6
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return out_path
+
+
+def plot_completeness_distribution(completeness_df: pd.DataFrame,
+                                   out_path: Path = Path('steps_completeness_distribution.png')):
+    """Plot histogram of completeness scores."""
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    bins = [0, 25, 50, 75, 90, 100]
+    counts, edges, patches = ax.hist(completeness_df['completeness_percentage'],
+                                     bins=bins, edgecolor='black', alpha=0.7,
+                                     color='#2E86AB')
+
+    # Color code bars
+    colors = ['#DC143C', '#FF6347', '#FFD700', '#90EE90', '#228B22']
+    for patch, color in zip(patches, colors):
+        patch.set_facecolor(color)
+
+    # Add count labels
+    for count, edge in zip(counts, edges[:-1]):
+        if count > 0:
+            ax.text(edge + (edges[1] - edges[0]) / 2, count,
+                   f'{int(count)}', ha='center', va='bottom',
+                   fontsize=10, fontweight='bold')
+
+    ax.set_xlabel('Completeness (%)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Number of Participants', fontsize=12, fontweight='bold')
+    ax.set_title('Distribution of Data Completeness Scores', fontsize=14, fontweight='bold', pad=20)
+    ax.set_xticks([0, 25, 50, 75, 90, 100])
+    ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -764,8 +916,6 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
     print(f'Saved steps hourly steps plot to {hourly_steps_path}')
     print(f'Saved steps summary CSV to {output_dir / "steps_summary_by_user.csv"}')
 
-    # Add these lines after the "Saved steps summary CSV" print statement and before "Generating plots for all users"
-
     # Calculate and plot completeness scores
     completeness_df = calculate_completeness_score(daily_counts)
     completeness_path = plot_completeness_score(
@@ -780,13 +930,35 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         out_path=output_dir / 'steps_availability_heatmap.png'
     )
 
+    # Plot daily participation rate
+    participation_path = plot_daily_participation(
+        daily_counts,
+        out_path=output_dir / 'steps_daily_participation.png'
+    )
+
+    # Plot completeness distribution
+    distribution_path = plot_completeness_distribution(
+        completeness_df,
+        out_path=output_dir / 'steps_completeness_distribution.png'
+    )
+
     print(f'Saved completeness score chart to {completeness_path}')
     print(f'Saved completeness scores CSV to {output_dir / "steps_completeness_scores.csv"}')
     print(f'Saved availability heatmap to {heatmap_path}')
+    print(f'Saved daily participation chart to {participation_path}')
+    print(f'Saved completeness distribution to {distribution_path}')
 
     # Generate ALL USERS plots
     print(f"\nGenerating plots for all {len(all_unique_users)} participants...")
     hourly_all = hourly_average_for_users(steps, all_unique_users, ts_col)
+
+    # Generate daily record counts (counting records, not summing steps)
+    daily_record_counts = per_user_daily_record_counts(steps, ts_col)
+
+    all_daily_records_path = plot_all_users_daily_records(
+        daily_record_counts,
+        out_path=output_dir / 'steps_all_users_daily_records.png'
+    )
 
     all_timeline_path = plot_all_users_timeline(
         daily_counts,
@@ -803,6 +975,7 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         out_path=output_dir / 'steps_all_users_hourly_steps.png'
     )
 
+    print(f'Saved ALL USERS daily records to {all_daily_records_path}')
     print(f'Saved ALL USERS timeline to {all_timeline_path}')
     print(f'Saved ALL USERS hourly records to {all_hourly_records_path}')
     print(f'Saved ALL USERS hourly steps to {all_hourly_steps_path}')
@@ -814,6 +987,11 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         'hourly_records_path': hourly_records_path,
         'hourly_steps_path': hourly_steps_path,
         'hourly_df': hourly,
+        'completeness_path': completeness_path,
+        'heatmap_path': heatmap_path,
+        'participation_path': participation_path,
+        'distribution_path': distribution_path,
+        'all_daily_records_path': all_daily_records_path,
         'all_timeline_path': all_timeline_path,
         'all_hourly_records_path': all_hourly_records_path,
         'all_hourly_steps_path': all_hourly_steps_path
