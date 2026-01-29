@@ -1,12 +1,23 @@
 """
 Model training script for mental health prediction using hourly screentime features.
 Experiments with different time windows (n hours before survey) to find optimal prediction window.
-Supports both PHQ-9 depression prediction and suicide risk prediction.
+Supports multiple prediction targets:
+- PHQ-9 depression prediction (phq9)
+- Suicide risk prediction (suicide_risk)
+- Self-harm risk prediction (self_harm)
+- Sleep risk prediction (sleep)
+
+Usage:
+    python model_screentime_time_windows.py phq9          # Depression prediction
+    python model_screentime_time_windows.py suicide_risk  # Suicide risk prediction
+    python model_screentime_time_windows.py self_harm     # Self-harm risk prediction
+    python model_screentime_time_windows.py sleep         # Sleep risk prediction
 """
 
 from src.data_processing.merge_passive_data_and_labels import (
     merge_daily_screentime_features_with_suicide_risk,
     merge_daily_screentime_features_with_phq9,
+    merge_daily_screentime_features_with_risk_labels,
     export_as_csv,
     propagate_positive_labels
 )
@@ -27,7 +38,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     Parameters:
     - data: DataFrame with hourly screentime features and target labels
     - time_window: number of hours before survey (for reporting)
-    - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
+                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
 
     Returns:
@@ -43,11 +55,23 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         positive_class = 'depressed'
         output_prefix = 'daily_screentime_phq9'
         prediction_task = 'Depression'
-    else:  # suicide_risk
+    elif target_type == 'suicide_risk':
         label_col = 'suicide_risk_label'
         positive_class = 'at_risk'
         output_prefix = 'daily_screentime_suicide_risk'
         prediction_task = 'Suicide Risk'
+    elif target_type == 'self_harm':
+        label_col = 'self_harm_risk_label'
+        positive_class = 'at_risk'
+        output_prefix = 'daily_screentime_self_harm'
+        prediction_task = 'Self-Harm Risk'
+    elif target_type == 'sleep':
+        label_col = 'sleep_label'
+        positive_class = 'at_risk'
+        output_prefix = 'daily_screentime_sleep'
+        prediction_task = 'Sleep Risk'
+    else:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
     print(f"\nData Summary:")
     print(f"  Total rows: {len(data)}")
@@ -175,15 +199,33 @@ def main(target_type='phq9', propagate_labels=False):
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
 
     Parameters:
-    - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
+                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     """
+    # Configure based on target type
+    label_column = None  # Initialize to avoid reference before assignment
     if target_type == 'phq9':
         task_name = "DEPRESSION PREDICTION (PHQ-9)"
         merge_function = merge_daily_screentime_features_with_phq9
-    else:
+        use_generic = False
+    elif target_type == 'suicide_risk':
         task_name = "SUICIDE RISK PREDICTION"
-        merge_function = merge_daily_screentime_features_with_suicide_risk
+        merge_function = None
+        label_column = 'suicide_risk_label'
+        use_generic = True
+    elif target_type == 'self_harm':
+        task_name = "SELF-HARM RISK PREDICTION"
+        merge_function = None
+        label_column = 'self_harm_risk_label'
+        use_generic = True
+    elif target_type == 'sleep':
+        task_name = "SLEEP RISK PREDICTION"
+        merge_function = None
+        label_column = 'sleep_label'
+        use_generic = True
+    else:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
     print("="*80)
     print(f"{task_name} - HOURLY SCREENTIME FEATURES")
@@ -202,12 +244,24 @@ def main(target_type='phq9', propagate_labels=False):
         print(f"{'='*80}")
 
         # Get data for this time window using the appropriate merge function
-        screentime_data = merge_function(
-            screentime_df=None,
-            fill_method='zero',
-            hours_before_survey=hours,
-            app_user_id=-1
-        )
+        if use_generic:
+            # Use the new generic function for risk labels
+            screentime_data = merge_daily_screentime_features_with_risk_labels(
+                screentime_df=None,
+                risk_labels_df=None,
+                label_column=label_column,
+                fill_method='zero',
+                hours_before_survey=hours,
+                app_user_id=-1
+            )
+        else:
+            # Use the PHQ-9 specific function
+            screentime_data = merge_function(
+                screentime_df=None,
+                fill_method='zero',
+                hours_before_survey=hours,
+                app_user_id=-1
+            )
 
         # Train and evaluate models
         results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels)
@@ -279,11 +333,11 @@ if __name__ == '__main__':
     # Check if a target type is provided as a command line argument
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
-        if target in ['phq9', 'suicide_risk']:
+        if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep']:
             main(target_type=target)
         else:
             print(f"Invalid target type: {target}")
-            print("Valid options: 'phq9' or 'suicide_risk'")
+            print("Valid options: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
             print("Using default: 'phq9'")
             main(target_type='phq9')
     else:
