@@ -1,21 +1,37 @@
 """
 Model training script for mental health prediction using hourly screentime features.
 Experiments with different time windows (n hours before survey) to find optimal prediction window.
-Supports both PHQ-9 depression prediction and suicide risk prediction.
+Supports multiple prediction targets:
+- PHQ-9 depression prediction (phq9)
+- Suicide risk prediction (suicide_risk)
+- Self-harm risk prediction (self_harm)
+- Sleep risk prediction (sleep)
+
+Usage:
+    python model_screentime_time_windows.py phq9          # Depression prediction
+    python model_screentime_time_windows.py suicide_risk  # Suicide risk prediction
+    python model_screentime_time_windows.py self_harm     # Self-harm risk prediction
+    python model_screentime_time_windows.py sleep         # Sleep risk prediction
 """
 
 from src.data_processing.merge_passive_data_and_labels import (
     merge_daily_screentime_features_with_suicide_risk,
     merge_daily_screentime_features_with_phq9,
+    merge_daily_screentime_features_with_risk_labels,
     export_as_csv,
     propagate_positive_labels
 )
 from src.config import DATA_DIR
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, accuracy_score
+from sklearn.metrics import classification_report, roc_auc_score, accuracy_score, confusion_matrix
+import matplotlib
+matplotlib.use('Agg')  # Set backend for non-interactive plotting
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -27,7 +43,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     Parameters:
     - data: DataFrame with hourly screentime features and target labels
     - time_window: number of hours before survey (for reporting)
-    - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
+                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
 
     Returns:
@@ -43,11 +60,23 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         positive_class = 'depressed'
         output_prefix = 'daily_screentime_phq9'
         prediction_task = 'Depression'
-    else:  # suicide_risk
+    elif target_type == 'suicide_risk':
         label_col = 'suicide_risk_label'
         positive_class = 'at_risk'
         output_prefix = 'daily_screentime_suicide_risk'
         prediction_task = 'Suicide Risk'
+    elif target_type == 'self_harm':
+        label_col = 'self_harm_risk_label'
+        positive_class = 'at_risk'
+        output_prefix = 'daily_screentime_self_harm'
+        prediction_task = 'Self-Harm Risk'
+    elif target_type == 'sleep':
+        label_col = 'sleep_label'
+        positive_class = 'at_risk'
+        output_prefix = 'daily_screentime_sleep'
+        prediction_task = 'Sleep Risk'
+    else:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
     print(f"\nData Summary:")
     print(f"  Total rows: {len(data)}")
@@ -128,6 +157,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     print(f"      Classification Report:")
     print("      " + "\n      ".join(classification_report(y_test, lr_pred).split('\n')))
 
+    # Generate confusion matrix
+    lr_cm = confusion_matrix(y_test, lr_pred)
+    print(f"      Confusion Matrix:")
+    print(f"      {lr_cm}")
+    results['lr_confusion_matrix'] = lr_cm.tolist()
+
     results['lr_accuracy'] = lr_acc
     try:
         lr_prob = lr_model.predict_proba(X_test)[:, 1]
@@ -145,6 +180,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     print(f"      Accuracy: {rf_acc:.4f}")
     print(f"      Classification Report:")
     print("      " + "\n      ".join(classification_report(y_test, rf_pred).split('\n')))
+
+    # Generate confusion matrix
+    rf_cm = confusion_matrix(y_test, rf_pred)
+    print(f"      Confusion Matrix:")
+    print(f"      {rf_cm}")
+    results['rf_confusion_matrix'] = rf_cm.tolist()
 
     results['rf_accuracy'] = rf_acc
     try:
@@ -168,6 +209,108 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     return results
 
 
+def plot_confusion_matrices(all_results, target_type='phq9'):
+    """
+    Plot confusion matrices for all time windows.
+
+    Parameters:
+    - all_results: List of result dictionaries from train_and_evaluate_models
+    - target_type: Type of target prediction
+    """
+    if not all_results:
+        return
+
+    # Determine label names based on target type
+    if target_type == 'phq9':
+        labels = ['not_depressed', 'depressed']
+    else:
+        labels = ['not_at_risk', 'at_risk']
+
+    # Create figure with subplots for each time window
+    n_windows = len(all_results)
+    fig, axes = plt.subplots(n_windows, 2, figsize=(14, 5 * n_windows))
+
+    # Handle case of single time window
+    if n_windows == 1:
+        axes = axes.reshape(1, -1)
+
+    fig.suptitle(f'Confusion Matrices - {target_type.replace("_", " ").title()} Prediction',
+                 fontsize=16, fontweight='bold', y=0.995)
+
+    for idx, result in enumerate(all_results):
+        time_window = result['time_window']
+
+        # Plot Logistic Regression confusion matrix
+        if 'lr_confusion_matrix' in result:
+            lr_cm = np.array(result['lr_confusion_matrix'])
+            sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 0], cbar=True)
+            axes[idx, 0].set_title(f'Logistic Regression - {time_window}h window\n'
+                                  f'Accuracy: {result["lr_accuracy"]:.3f}')
+            axes[idx, 0].set_ylabel('True Label')
+            axes[idx, 0].set_xlabel('Predicted Label')
+
+        # Plot Random Forest confusion matrix
+        if 'rf_confusion_matrix' in result:
+            rf_cm = np.array(result['rf_confusion_matrix'])
+            sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 1], cbar=True)
+            axes[idx, 1].set_title(f'Random Forest - {time_window}h window\n'
+                                  f'Accuracy: {result["rf_accuracy"]:.3f}')
+            axes[idx, 1].set_ylabel('True Label')
+            axes[idx, 1].set_xlabel('Predicted Label')
+
+    plt.tight_layout()
+
+    # Save figure
+    output_filename = f'confusion_matrices_{target_type}.png'
+    output_path = data_dir / output_filename
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\nConfusion matrices visualization saved to: {output_path}")
+
+    # Also create a summary plot showing only the best performing window
+    if all_results:
+        # Find best performing window by accuracy
+        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_accuracy'])
+        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_accuracy'])
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
+                     fontsize=16, fontweight='bold')
+
+        # Best Logistic Regression
+        best_lr = all_results[best_lr_idx]
+        lr_cm = np.array(best_lr['lr_confusion_matrix'])
+        sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=labels, yticklabels=labels,
+                   ax=axes[0], cbar=True, annot_kws={'size': 14})
+        axes[0].set_title(f'Best Logistic Regression\n{best_lr["time_window"]}h window - '
+                         f'Accuracy: {best_lr["lr_accuracy"]:.3f}', fontsize=12, fontweight='bold')
+        axes[0].set_ylabel('True Label', fontsize=11)
+        axes[0].set_xlabel('Predicted Label', fontsize=11)
+
+        # Best Random Forest
+        best_rf = all_results[best_rf_idx]
+        rf_cm = np.array(best_rf['rf_confusion_matrix'])
+        sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
+                   xticklabels=labels, yticklabels=labels,
+                   ax=axes[1], cbar=True, annot_kws={'size': 14})
+        axes[1].set_title(f'Best Random Forest\n{best_rf["time_window"]}h window - '
+                         f'Accuracy: {best_rf["rf_accuracy"]:.3f}', fontsize=12, fontweight='bold')
+        axes[1].set_ylabel('True Label', fontsize=11)
+        axes[1].set_xlabel('Predicted Label', fontsize=11)
+
+        plt.tight_layout()
+
+        # Save best models figure
+        best_output_filename = f'confusion_matrices_{target_type}_best.png'
+        best_output_path = data_dir / best_output_filename
+        plt.savefig(best_output_path, dpi=300, bbox_inches='tight')
+        print(f"Best models confusion matrices saved to: {best_output_path}")
+
+
 
 def main(target_type='phq9', propagate_labels=False):
     """
@@ -175,15 +318,33 @@ def main(target_type='phq9', propagate_labels=False):
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
 
     Parameters:
-    - target_type: 'phq9' for depression prediction or 'suicide_risk' for suicide risk prediction
+    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
+                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     """
+    # Configure based on target type
+    label_column = None  # Initialize to avoid reference before assignment
     if target_type == 'phq9':
         task_name = "DEPRESSION PREDICTION (PHQ-9)"
         merge_function = merge_daily_screentime_features_with_phq9
-    else:
+        use_generic = False
+    elif target_type == 'suicide_risk':
         task_name = "SUICIDE RISK PREDICTION"
-        merge_function = merge_daily_screentime_features_with_suicide_risk
+        merge_function = None
+        label_column = 'suicide_risk_label'
+        use_generic = True
+    elif target_type == 'self_harm':
+        task_name = "SELF-HARM RISK PREDICTION"
+        merge_function = None
+        label_column = 'self_harm_risk_label'
+        use_generic = True
+    elif target_type == 'sleep':
+        task_name = "SLEEP RISK PREDICTION"
+        merge_function = None
+        label_column = 'sleep_label'
+        use_generic = True
+    else:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
     print("="*80)
     print(f"{task_name} - HOURLY SCREENTIME FEATURES")
@@ -202,12 +363,24 @@ def main(target_type='phq9', propagate_labels=False):
         print(f"{'='*80}")
 
         # Get data for this time window using the appropriate merge function
-        screentime_data = merge_function(
-            screentime_df=None,
-            fill_method='zero',
-            hours_before_survey=hours,
-            app_user_id=-1
-        )
+        if use_generic:
+            # Use the new generic function for risk labels
+            screentime_data = merge_daily_screentime_features_with_risk_labels(
+                screentime_df=None,
+                risk_labels_df=None,
+                label_column=label_column,
+                fill_method='zero',
+                hours_before_survey=hours,
+                app_user_id=-1
+            )
+        else:
+            # Use the PHQ-9 specific function
+            screentime_data = merge_function(
+                screentime_df=None,
+                fill_method='zero',
+                hours_before_survey=hours,
+                app_user_id=-1
+            )
 
         # Train and evaluate models
         results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels)
@@ -264,6 +437,12 @@ def main(target_type='phq9', propagate_labels=False):
         output_path = data_dir / output_filename
         comparison_df.to_csv(output_path, index=False)
         print(f"\nResults saved to: {output_path}")
+
+        # Generate confusion matrix visualizations
+        print(f"\n{'='*80}")
+        print("GENERATING CONFUSION MATRIX VISUALIZATIONS")
+        print(f"{'='*80}")
+        plot_confusion_matrices(all_results, target_type=target_type)
     else:
         print("\nNo results to compare. Insufficient data for all time windows.")
 
@@ -279,11 +458,11 @@ if __name__ == '__main__':
     # Check if a target type is provided as a command line argument
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
-        if target in ['phq9', 'suicide_risk']:
+        if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep']:
             main(target_type=target)
         else:
             print(f"Invalid target type: {target}")
-            print("Valid options: 'phq9' or 'suicide_risk'")
+            print("Valid options: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
             print("Using default: 'phq9'")
             main(target_type='phq9')
     else:
