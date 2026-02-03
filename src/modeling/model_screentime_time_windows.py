@@ -36,7 +36,7 @@ import seaborn as sns
 # Use centralized data directory
 data_dir = DATA_DIR
 
-def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False):
+def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False, balanced_class_weight=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -46,6 +46,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
                    'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
+    - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
 
     Returns:
     - Dictionary with model performance metrics
@@ -78,9 +79,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     else:
         raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
+    class_weight = 'balanced' if balanced_class_weight else None
+
     print(f"\nData Summary:")
     print(f"  Total rows: {len(data)}")
     print(f"  Unique users: {data['app_user_id'].nunique()}")
+    print(f"  Class balancing: {'ENABLED (class_weight=balanced)' if balanced_class_weight else 'DISABLED (class_weight=None)'}")
     print(f"  Label distribution (before propagation):")
     print(f"    {data[label_col].value_counts().to_dict()}")
 
@@ -139,6 +143,17 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     print(f"    Train labels: {y_train.value_counts().to_dict()}")
     print(f"    Test labels: {y_test.value_counts().to_dict()}")
 
+    # Calculate and display class weights if balancing is enabled
+    if balanced_class_weight:
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(zip(np.unique(y_train), class_weights))
+        print(f"\n    Class weights being applied:")
+        for label, weight in class_weight_dict.items():
+            count = (y_train == label).sum()
+            print(f"      {label}: {weight:.4f} (n={count})")
+        print(f"    Note: Higher weights are applied to minority class to balance the training")
+
     results = {
         'time_window': time_window,
         'total_samples': len(data),
@@ -149,7 +164,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     # Train Logistic Regression
     print(f"\n    Logistic Regression:")
-    lr_model = LogisticRegression(max_iter=1000, random_state=42)
+    if balanced_class_weight:
+        print(f"      Training with class_weight='balanced' to handle class imbalance...")
+    lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
     lr_model.fit(X_train, y_train)
     lr_pred = lr_model.predict(X_test)
     lr_acc = accuracy_score(y_test, lr_pred)
@@ -157,8 +174,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     print(f"      Classification Report:")
     print("      " + "\n      ".join(classification_report(y_test, lr_pred).split('\n')))
 
-    # Generate confusion matrix
-    lr_cm = confusion_matrix(y_test, lr_pred)
+    # Generate confusion matrix with explicit label order
+    # Determine label order based on target type (to match visualization)
+    if target_type == 'phq9':
+        label_order = ['not_depressed', 'depressed']
+    else:
+        label_order = ['not_at_risk', 'at_risk']
+
+    lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
     print(f"      Confusion Matrix:")
     print(f"      {lr_cm}")
     results['lr_confusion_matrix'] = lr_cm.tolist()
@@ -173,7 +196,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     # Train Random Forest
     print(f"\n    Random Forest:")
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+    if balanced_class_weight:
+        print(f"      Training with class_weight='balanced' to handle class imbalance...")
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
     rf_model.fit(X_train, y_train)
     rf_pred = rf_model.predict(X_test)
     rf_acc = accuracy_score(y_test, rf_pred)
@@ -181,8 +206,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     print(f"      Classification Report:")
     print("      " + "\n      ".join(classification_report(y_test, rf_pred).split('\n')))
 
-    # Generate confusion matrix
-    rf_cm = confusion_matrix(y_test, rf_pred)
+    # Generate confusion matrix with explicit label order (same as LR above)
+    rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
     print(f"      Confusion Matrix:")
     print(f"      {rf_cm}")
     results['rf_confusion_matrix'] = rf_cm.tolist()
@@ -206,16 +231,31 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     results['top_features'] = feature_importance.head(5).to_dict('records')
 
+    # Prediction distribution analysis
+    print(f"\n    Prediction Distribution Analysis:")
+    lr_pred_counts = dict(zip(*np.unique(lr_pred, return_counts=True)))
+    rf_pred_counts = dict(zip(*np.unique(rf_pred, return_counts=True)))
+    print(f"      Logistic Regression predictions: {lr_pred_counts}")
+    print(f"      Random Forest predictions: {rf_pred_counts}")
+    print(f"      Actual test labels: {y_test.value_counts().to_dict()}")
+
+    if balanced_class_weight:
+        print(f"\n    Class Balancing Summary:")
+        print(f"      Class weights were applied to help the model learn from minority class.")
+        print(f"      This increases the cost of misclassifying the minority class during training.")
+        print(f"      Effect: Models are encouraged to predict the minority class more often.")
+
     return results
 
 
-def plot_confusion_matrices(all_results, target_type='phq9'):
+def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weight=False):
     """
     Plot confusion matrices for all time windows.
 
     Parameters:
     - all_results: List of result dictionaries from train_and_evaluate_models
     - target_type: Type of target prediction
+    - balanced_class_weight: Whether class balancing was used
     """
     if not all_results:
         return
@@ -234,7 +274,9 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
     if n_windows == 1:
         axes = axes.reshape(1, -1)
 
-    fig.suptitle(f'Confusion Matrices - {target_type.replace("_", " ").title()} Prediction',
+    class_weight_title = " (Balanced Class Weights)" if balanced_class_weight else ""
+
+    fig.suptitle(f'Confusion Matrices - {target_type.replace("_", " ").title()} Prediction{class_weight_title}',
                  fontsize=16, fontweight='bold', y=0.995)
 
     for idx, result in enumerate(all_results):
@@ -264,8 +306,10 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
 
     plt.tight_layout()
 
+    balanced_suffix = '_balanced' if balanced_class_weight else ''
+
     # Save figure
-    output_filename = f'confusion_matrices_{target_type}.png'
+    output_filename = f'confusion_matrices_{target_type}{balanced_suffix}.png'
     output_path = data_dir / output_filename
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"\nConfusion matrices visualization saved to: {output_path}")
@@ -305,14 +349,14 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
         plt.tight_layout()
 
         # Save best models figure
-        best_output_filename = f'confusion_matrices_{target_type}_best.png'
+        best_output_filename = f'confusion_matrices_{target_type}{balanced_suffix}_best.png'
         best_output_path = data_dir / best_output_filename
         plt.savefig(best_output_path, dpi=300, bbox_inches='tight')
         print(f"Best models confusion matrices saved to: {best_output_path}")
 
 
 
-def main(target_type='phq9', propagate_labels=False):
+def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
@@ -321,6 +365,7 @@ def main(target_type='phq9', propagate_labels=False):
     - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
                    'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
+    - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     """
     # Configure based on target type
     label_column = None  # Initialize to avoid reference before assignment
@@ -354,7 +399,7 @@ def main(target_type='phq9', propagate_labels=False):
     print("="*80)
 
     # Time windows to experiment with (in hours)
-    time_windows = [6,7,8,9]
+    time_windows = [3,4,5,6,7,8,9]
     all_results = []
 
     for hours in time_windows:
@@ -383,7 +428,7 @@ def main(target_type='phq9', propagate_labels=False):
             )
 
         # Train and evaluate models
-        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels)
+        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight)
         if results:
             all_results.append(results)
 
@@ -433,7 +478,8 @@ def main(target_type='phq9', propagate_labels=False):
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
 
         # Save results to CSV
-        output_filename = f'time_window_comparison_{target_type}_results.csv'
+        balanced_suffix = '_balanced' if balanced_class_weight else ''
+        output_filename = f'time_window_comparison_{target_type}_results{balanced_suffix}.csv'
         output_path = data_dir / output_filename
         comparison_df.to_csv(output_path, index=False)
         print(f"\nResults saved to: {output_path}")
@@ -442,7 +488,7 @@ def main(target_type='phq9', propagate_labels=False):
         print(f"\n{'='*80}")
         print("GENERATING CONFUSION MATRIX VISUALIZATIONS")
         print(f"{'='*80}")
-        plot_confusion_matrices(all_results, target_type=target_type)
+        plot_confusion_matrices(all_results, target_type=target_type, balanced_class_weight=balanced_class_weight)
     else:
         print("\nNo results to compare. Insufficient data for all time windows.")
 
@@ -456,16 +502,29 @@ if __name__ == '__main__':
     import sys
 
     # Check if a target type is provided as a command line argument
+    target_type = 'phq9'
+    propagate_labels = False
+    balanced_class_weight = False
+
+    # Parse command line arguments
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
         if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep']:
-            main(target_type=target)
+            target_type = target
         else:
             print(f"Invalid target type: {target}")
             print("Valid options: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
             print("Using default: 'phq9'")
-            main(target_type='phq9')
-    else:
-        # Default to PHQ-9 prediction
-        main(target_type='phq9')
+
+    # Check for optional flags
+    if '--propagate' in sys.argv or '-p' in sys.argv:
+        propagate_labels = True
+        print("Label propagation enabled")
+
+    if '--balanced' in sys.argv or '-b' in sys.argv:
+        balanced_class_weight = True
+        print("Class balancing enabled")
+
+    # Run main with parsed arguments
+    main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight)
 
