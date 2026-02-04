@@ -12,22 +12,25 @@ Usage:
     python model_screentime_time_windows.py suicide_risk  # Suicide risk prediction
     python model_screentime_time_windows.py self_harm     # Self-harm risk prediction
     python model_screentime_time_windows.py sleep         # Sleep risk prediction
+
+Optional flags:
+    --propagate, -p   Propagate positive labels to all entries for users with any positive label
+    --balanced, -b    Use balanced class weights to handle class imbalance
+    --loocv, -l       Use leave-one-user-out cross-validation instead of train/test split
 """
 
 from src.data_processing.merge_passive_data_and_labels import (
-    merge_daily_screentime_features_with_suicide_risk,
     merge_daily_screentime_features_with_phq9,
     merge_daily_screentime_features_with_risk_labels,
-    export_as_csv,
     propagate_positive_labels
 )
 from src.config import DATA_DIR
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
@@ -36,7 +39,7 @@ import seaborn as sns
 # Use centralized data directory
 data_dir = DATA_DIR
 
-def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False):
+def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -46,6 +49,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
                    'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
+    - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
+    - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
 
     Returns:
     - Dictionary with model performance metrics
@@ -78,23 +83,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     else:
         raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 
-    print(f"\nData Summary:")
-    print(f"  Total rows: {len(data)}")
-    print(f"  Unique users: {data['app_user_id'].nunique()}")
-    print(f"  Label distribution (before propagation):")
-    print(f"    {data[label_col].value_counts().to_dict()}")
+    class_weight = 'balanced' if balanced_class_weight else None
 
     # Apply label propagation if requested
     if propagate_labels:
-        print(f"\n  Applying label propagation for users with at least one '{positive_class}' label...")
         data = propagate_positive_labels(data, label_col, positive_class)
-
-    # Export each time window separately
-    export_as_csv(data, f'{output_prefix}_{time_window}h.csv')
 
     # Check if we have both classes
     if data[label_col].nunique() < 2:
-        print(f"    WARNING: Only one class present ({data[label_col].unique()[0]}). Cannot train model.")
         return None
 
     # Check minimum samples per class
@@ -102,123 +98,234 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     min_class_count = class_counts.min()
 
     if min_class_count < 2:
-        print(f"    WARNING: Minority class has only {min_class_count} sample(s). Need at least 2 per class for train/test split.")
         return None
 
     if len(data) < 10:
-        print(f"    Insufficient data for modeling (need at least 10 samples, have {len(data)})")
         return None
 
-    print(f"\n  Training models for {time_window}-hour window ({prediction_task} prediction)...")
 
     # Prepare features and labels
     hour_cols = [f'hour_{i}' for i in range(time_window)]
     X = data[hour_cols]
     y = data[label_col]
 
-    # Split data with stratification
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.3, random_state=42, stratify=y
-        )
-    except ValueError as e:
-        print(f"    WARNING: Cannot stratify split (likely too few samples in minority class). Using random split.")
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.3, random_state=42, stratify=None
-        )
+    # Determine label order based on target type (for confusion matrix)
+    if target_type == 'phq9':
+        label_order = ['not_depressed', 'depressed']
+    else:
+        label_order = ['not_at_risk', 'at_risk']
 
-    # Final check: ensure both train and test have both classes
-    if y_train.nunique() < 2:
-        print(f"    WARNING: Training set only has one class. Cannot train model.")
-        return None
+    class_weight = 'balanced' if balanced_class_weight else None
 
-    if y_test.nunique() < 2:
-        print(f"    WARNING: Test set only has one class. Results may not be meaningful.")
+    # Check if using LOOCV
+    if use_loocv:
 
-    print(f"    Train set: {len(X_train)} samples, Test set: {len(X_test)} samples")
-    print(f"    Train labels: {y_train.value_counts().to_dict()}")
-    print(f"    Test labels: {y_test.value_counts().to_dict()}")
+        # Initialize LOOCV
+        logo = LeaveOneGroupOut()
+        groups = data['app_user_id']
 
-    results = {
-        'time_window': time_window,
-        'total_samples': len(data),
-        'train_samples': len(X_train),
-        'test_samples': len(X_test),
-        'target_type': target_type
-    }
+        # Store predictions and true labels across all folds
+        all_lr_preds = []
+        all_rf_preds = []
+        all_lr_probs = []
+        all_rf_probs = []
+        all_y_test = []
 
-    # Train Logistic Regression
-    print(f"\n    Logistic Regression:")
-    lr_model = LogisticRegression(max_iter=1000, random_state=42)
-    lr_model.fit(X_train, y_train)
-    lr_pred = lr_model.predict(X_test)
-    lr_acc = accuracy_score(y_test, lr_pred)
-    print(f"      Accuracy: {lr_acc:.4f}")
-    print(f"      Classification Report:")
-    print("      " + "\n      ".join(classification_report(y_test, lr_pred).split('\n')))
+        fold_num = 0
+        successful_folds = 0
 
-    # Generate confusion matrix
-    lr_cm = confusion_matrix(y_test, lr_pred)
-    print(f"      Confusion Matrix:")
-    print(f"      {lr_cm}")
-    results['lr_confusion_matrix'] = lr_cm.tolist()
+        for train_idx, test_idx in logo.split(X, y, groups):
+            fold_num += 1
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-    results['lr_accuracy'] = lr_acc
-    try:
-        lr_prob = lr_model.predict_proba(X_test)[:, 1]
-        y_test_binary = (y_test == positive_class).values.astype(int)
-        results['lr_roc_auc'] = roc_auc_score(y_test_binary, lr_prob)
-    except:
-        results['lr_roc_auc'] = None
+            test_user = groups.iloc[test_idx].iloc[0]
 
-    # Train Random Forest
-    print(f"\n    Random Forest:")
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-    rf_model.fit(X_train, y_train)
-    rf_pred = rf_model.predict(X_test)
-    rf_acc = accuracy_score(y_test, rf_pred)
-    print(f"      Accuracy: {rf_acc:.4f}")
-    print(f"      Classification Report:")
-    print("      " + "\n      ".join(classification_report(y_test, rf_pred).split('\n')))
+            # Skip fold if training or test set has only one class
+            if y_train.nunique() < 2:
+                continue
 
-    # Generate confusion matrix
-    rf_cm = confusion_matrix(y_test, rf_pred)
-    print(f"      Confusion Matrix:")
-    print(f"      {rf_cm}")
-    results['rf_confusion_matrix'] = rf_cm.tolist()
+            if y_test.nunique() < 1:
+                continue
 
-    results['rf_accuracy'] = rf_acc
-    try:
-        rf_prob = rf_model.predict_proba(X_test)[:, 1]
-        y_test_binary = (y_test == positive_class).values.astype(int)
-        results['rf_roc_auc'] = roc_auc_score(y_test_binary, rf_prob)
-    except:
-        results['rf_roc_auc'] = None
+            successful_folds += 1
 
-    # Feature importance for Random Forest
-    print(f"\n    Top 5 Most Important Hours (Random Forest):")
-    feature_importance = pd.DataFrame({
-        'hour': hour_cols,
-        'importance': rf_model.feature_importances_
-    }).sort_values('importance', ascending=False)
-    for idx, row in feature_importance.head(5).iterrows():
-        print(f"      {row['hour']}: {row['importance']:.4f}")
+            # Train models for this fold
+            try:
+                # Logistic Regression
+                lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
+                lr_model.fit(X_train, y_train)
+                lr_pred = lr_model.predict(X_test)
 
-    results['top_features'] = feature_importance.head(5).to_dict('records')
+                # Random Forest
+                rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+                rf_model.fit(X_train, y_train)
+                rf_pred = rf_model.predict(X_test)
 
-    return results
+                # Store predictions and true labels
+                all_lr_preds.extend(lr_pred)
+                all_rf_preds.extend(rf_pred)
+                all_y_test.extend(y_test)
+
+                # Store probabilities if possible
+                try:
+                    lr_prob = lr_model.predict_proba(X_test)[:, 1]
+                    all_lr_probs.extend(lr_prob)
+                except:
+                    pass
+
+                try:
+                    rf_prob = rf_model.predict_proba(X_test)[:, 1]
+                    all_rf_probs.extend(rf_prob)
+                except:
+                    pass
+
+            except Exception as e:
+                continue
+
+        if successful_folds == 0:
+            return None
 
 
-def plot_confusion_matrices(all_results, target_type='phq9'):
+        # Convert to numpy arrays for evaluation
+        all_y_test = np.array(all_y_test)
+        all_lr_preds = np.array(all_lr_preds)
+        all_rf_preds = np.array(all_rf_preds)
+
+        # Calculate metrics across all folds
+        lr_acc = accuracy_score(all_y_test, all_lr_preds)
+        rf_acc = accuracy_score(all_y_test, all_rf_preds)
+
+        # Generate confusion matrices
+        lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
+        rf_cm = confusion_matrix(all_y_test, all_rf_preds, labels=label_order)
+
+
+        # Store results
+        results = {
+            'time_window': time_window,
+            'total_samples': len(data),
+            'train_samples': len(data) - int(len(data) / data['app_user_id'].nunique()),  # Approx
+            'test_samples': int(len(data) / data['app_user_id'].nunique()),  # Approx
+            'target_type': target_type,
+            'cv_method': 'LOOCV',
+            'successful_folds': successful_folds,
+            'lr_accuracy': lr_acc,
+            'rf_accuracy': rf_acc,
+            'lr_confusion_matrix': lr_cm.tolist(),
+            'rf_confusion_matrix': rf_cm.tolist()
+        }
+
+        # Calculate F1 score
+        try:
+            results['lr_f1_score'] = f1_score(all_y_test, all_lr_preds, pos_label=positive_class, average='binary')
+        except:
+            results['lr_f1_score'] = None
+
+        try:
+            results['rf_f1_score'] = f1_score(all_y_test, all_rf_preds, pos_label=positive_class, average='binary')
+        except:
+            results['rf_f1_score'] = None
+
+        # Feature importance (train on full dataset)
+        rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+        rf_full.fit(X, y)
+        feature_importance = pd.DataFrame({
+            'hour': hour_cols,
+            'importance': rf_full.feature_importances_
+        }).sort_values('importance', ascending=False)
+
+        results['top_features'] = feature_importance.head(5).to_dict('records')
+
+
+        return results
+
+    else:
+        # Standard train/test split
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3, random_state=42, stratify=y
+            )
+        except ValueError as e:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3, random_state=42, stratify=None
+            )
+
+        # Final check: ensure both train and test have both classes
+        if y_train.nunique() < 2:
+            return None
+
+        if y_test.nunique() < 2:
+            pass  # Continue but note that results may not be meaningful
+
+        results = {
+            'time_window': time_window,
+            'total_samples': len(data),
+            'train_samples': len(X_train),
+            'test_samples': len(X_test),
+            'target_type': target_type
+        }
+
+        # Train Logistic Regression
+        lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
+        lr_model.fit(X_train, y_train)
+        lr_pred = lr_model.predict(X_test)
+        lr_acc = accuracy_score(y_test, lr_pred)
+
+        # Generate confusion matrix with explicit label order
+        lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
+        results['lr_confusion_matrix'] = lr_cm.tolist()
+
+        results['lr_accuracy'] = lr_acc
+        try:
+            results['lr_f1_score'] = f1_score(y_test, lr_pred, pos_label=positive_class, average='binary')
+        except:
+            results['lr_f1_score'] = None
+
+        # Train Random Forest
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+        rf_model.fit(X_train, y_train)
+        rf_pred = rf_model.predict(X_test)
+        rf_acc = accuracy_score(y_test, rf_pred)
+
+        # Generate confusion matrix with explicit label order (same as LR above)
+        rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
+        results['rf_confusion_matrix'] = rf_cm.tolist()
+
+        results['rf_accuracy'] = rf_acc
+        try:
+            results['rf_f1_score'] = f1_score(y_test, rf_pred, pos_label=positive_class, average='binary')
+        except:
+            results['rf_f1_score'] = None
+
+        # Feature importance for Random Forest
+        feature_importance = pd.DataFrame({
+            'hour': hour_cols,
+            'importance': rf_model.feature_importances_
+        }).sort_values('importance', ascending=False)
+
+        results['top_features'] = feature_importance.head(5).to_dict('records')
+
+
+        return results
+
+
+def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weight=False, use_loocv=False):
     """
     Plot confusion matrices for all time windows.
 
     Parameters:
     - all_results: List of result dictionaries from train_and_evaluate_models
     - target_type: Type of target prediction
+    - balanced_class_weight: Whether class balancing was used
+    - use_loocv: Whether leave-one-out cross-validation was used
     """
     if not all_results:
         return
+
+    # Define balanced suffix early so it's available throughout the function
+    balanced_suffix = '_balanced' if balanced_class_weight else ''
+    loocv_suffix = '_loocv' if use_loocv else ''
 
     # Determine label names based on target type
     if target_type == 'phq9':
@@ -234,7 +341,9 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
     if n_windows == 1:
         axes = axes.reshape(1, -1)
 
-    fig.suptitle(f'Confusion Matrices - {target_type.replace("_", " ").title()} Prediction',
+    class_weight_title = " (Balanced Class Weights)" if balanced_class_weight else ""
+
+    fig.suptitle(f'Confusion Matrices - {target_type.replace("_", " ").title()} Prediction{class_weight_title}',
                  fontsize=16, fontweight='bold', y=0.995)
 
     for idx, result in enumerate(all_results):
@@ -246,8 +355,11 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
             sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 0], cbar=True)
-            axes[idx, 0].set_title(f'Logistic Regression - {time_window}h window\n'
-                                  f'Accuracy: {result["lr_accuracy"]:.3f}')
+            # Build title with F1 score if available
+            title = f'Logistic Regression - {time_window}h window\nAccuracy: {result["lr_accuracy"]:.3f}'
+            if 'lr_f1_score' in result and result['lr_f1_score'] is not None:
+                title += f' | F1: {result["lr_f1_score"]:.3f}'
+            axes[idx, 0].set_title(title)
             axes[idx, 0].set_ylabel('True Label')
             axes[idx, 0].set_xlabel('Predicted Label')
 
@@ -257,18 +369,21 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
             sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 1], cbar=True)
-            axes[idx, 1].set_title(f'Random Forest - {time_window}h window\n'
-                                  f'Accuracy: {result["rf_accuracy"]:.3f}')
+            # Build title with F1 score if available
+            title = f'Random Forest - {time_window}h window\nAccuracy: {result["rf_accuracy"]:.3f}'
+            if 'rf_f1_score' in result and result['rf_f1_score'] is not None:
+                title += f' | F1: {result["rf_f1_score"]:.3f}'
+            axes[idx, 1].set_title(title)
             axes[idx, 1].set_ylabel('True Label')
             axes[idx, 1].set_xlabel('Predicted Label')
 
     plt.tight_layout()
 
     # Save figure
-    output_filename = f'confusion_matrices_{target_type}.png'
+    output_filename = f'confusion_matrices_{target_type}{balanced_suffix}{loocv_suffix}.png'
     output_path = data_dir / output_filename
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"\nConfusion matrices visualization saved to: {output_path}")
+    plt.close()  # Close the figure to free memory
 
     # Also create a summary plot showing only the best performing window
     if all_results:
@@ -286,8 +401,11 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
         sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[0], cbar=True, annot_kws={'size': 14})
-        axes[0].set_title(f'Best Logistic Regression\n{best_lr["time_window"]}h window - '
-                         f'Accuracy: {best_lr["lr_accuracy"]:.3f}', fontsize=12, fontweight='bold')
+        # Build title with F1 score if available
+        title = f'Best Logistic Regression\n{best_lr["time_window"]}h window - Accuracy: {best_lr["lr_accuracy"]:.3f}'
+        if 'lr_f1_score' in best_lr and best_lr['lr_f1_score'] is not None:
+            title += f' | F1: {best_lr["lr_f1_score"]:.3f}'
+        axes[0].set_title(title, fontsize=12, fontweight='bold')
         axes[0].set_ylabel('True Label', fontsize=11)
         axes[0].set_xlabel('Predicted Label', fontsize=11)
 
@@ -297,22 +415,25 @@ def plot_confusion_matrices(all_results, target_type='phq9'):
         sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[1], cbar=True, annot_kws={'size': 14})
-        axes[1].set_title(f'Best Random Forest\n{best_rf["time_window"]}h window - '
-                         f'Accuracy: {best_rf["rf_accuracy"]:.3f}', fontsize=12, fontweight='bold')
+        # Build title with F1 score if available
+        title = f'Best Random Forest\n{best_rf["time_window"]}h window - Accuracy: {best_rf["rf_accuracy"]:.3f}'
+        if 'rf_f1_score' in best_rf and best_rf['rf_f1_score'] is not None:
+            title += f' | F1: {best_rf["rf_f1_score"]:.3f}'
+        axes[1].set_title(title, fontsize=12, fontweight='bold')
         axes[1].set_ylabel('True Label', fontsize=11)
         axes[1].set_xlabel('Predicted Label', fontsize=11)
 
         plt.tight_layout()
 
         # Save best models figure
-        best_output_filename = f'confusion_matrices_{target_type}_best.png'
+        best_output_filename = f'confusion_matrices_{target_type}{balanced_suffix}{loocv_suffix}_best.png'
         best_output_path = data_dir / best_output_filename
         plt.savefig(best_output_path, dpi=300, bbox_inches='tight')
-        print(f"Best models confusion matrices saved to: {best_output_path}")
+        plt.close()  # Close the figure to free memory
 
 
 
-def main(target_type='phq9', propagate_labels=False):
+def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
@@ -321,6 +442,8 @@ def main(target_type='phq9', propagate_labels=False):
     - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
                    'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
+    - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
+    - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
     """
     # Configure based on target type
     label_column = None  # Initialize to avoid reference before assignment
@@ -354,13 +477,10 @@ def main(target_type='phq9', propagate_labels=False):
     print("="*80)
 
     # Time windows to experiment with (in hours)
-    time_windows = [6,7,8,9]
+    time_windows = [3,4,5,6,7,8,9]
     all_results = []
 
     for hours in time_windows:
-        print(f"\n{'='*80}")
-        print(f"TIME WINDOW: {hours} hours before survey")
-        print(f"{'='*80}")
 
         # Get data for this time window using the appropriate merge function
         if use_generic:
@@ -383,7 +503,7 @@ def main(target_type='phq9', propagate_labels=False):
             )
 
         # Train and evaluate models
-        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels)
+        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
         if results:
             all_results.append(results)
 
@@ -396,26 +516,26 @@ def main(target_type='phq9', propagate_labels=False):
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
         display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy']
-        if 'lr_roc_auc' in comparison_df.columns:
-            display_cols.extend(['lr_roc_auc', 'rf_roc_auc'])
+        if 'lr_f1_score' in comparison_df.columns:
+            display_cols.extend(['lr_f1_score', 'rf_f1_score'])
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
-        if 'lr_roc_auc' in comparison_df.columns and comparison_df['lr_roc_auc'].notna().any():
-            best_lr_window = comparison_df.loc[comparison_df['lr_roc_auc'].idxmax()]
-            best_rf_window = comparison_df.loc[comparison_df['rf_roc_auc'].idxmax()]
+        if 'lr_f1_score' in comparison_df.columns and comparison_df['lr_f1_score'].notna().any():
+            best_lr_window = comparison_df.loc[comparison_df['lr_f1_score'].idxmax()]
+            best_rf_window = comparison_df.loc[comparison_df['rf_f1_score'].idxmax()]
 
             print(f"\n" + "="*80)
             print("BEST PERFORMING TIME WINDOWS")
             print("="*80)
             print(f"\nLogistic Regression:")
             print(f"  Best window: {best_lr_window['time_window']}h")
-            print(f"  ROC-AUC: {best_lr_window['lr_roc_auc']:.4f}")
+            print(f"  F1 Score: {best_lr_window['lr_f1_score']:.4f}")
             print(f"  Accuracy: {best_lr_window['lr_accuracy']:.4f}")
 
             print(f"\nRandom Forest:")
             print(f"  Best window: {best_rf_window['time_window']}h")
-            print(f"  ROC-AUC: {best_rf_window['rf_roc_auc']:.4f}")
+            print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
         else:
             best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
@@ -432,17 +552,9 @@ def main(target_type='phq9', propagate_labels=False):
             print(f"  Best window: {best_rf_window['time_window']}h")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
 
-        # Save results to CSV
-        output_filename = f'time_window_comparison_{target_type}_results.csv'
-        output_path = data_dir / output_filename
-        comparison_df.to_csv(output_path, index=False)
-        print(f"\nResults saved to: {output_path}")
 
         # Generate confusion matrix visualizations
-        print(f"\n{'='*80}")
-        print("GENERATING CONFUSION MATRIX VISUALIZATIONS")
-        print(f"{'='*80}")
-        plot_confusion_matrices(all_results, target_type=target_type)
+        plot_confusion_matrices(all_results, target_type=target_type, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
     else:
         print("\nNo results to compare. Insufficient data for all time windows.")
 
@@ -456,16 +568,34 @@ if __name__ == '__main__':
     import sys
 
     # Check if a target type is provided as a command line argument
+    target_type = 'phq9'
+    propagate_labels = False
+    balanced_class_weight = False
+    use_loocv = False
+
+    # Parse command line arguments
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
         if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep']:
-            main(target_type=target)
+            target_type = target
         else:
             print(f"Invalid target type: {target}")
             print("Valid options: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
             print("Using default: 'phq9'")
-            main(target_type='phq9')
-    else:
-        # Default to PHQ-9 prediction
-        main(target_type='phq9')
+
+    # Check for optional flags
+    if '--propagate' in sys.argv or '-p' in sys.argv:
+        propagate_labels = True
+        print("Label propagation enabled")
+
+    if '--balanced' in sys.argv or '-b' in sys.argv:
+        balanced_class_weight = True
+        print("Class balancing enabled")
+
+    if '--loocv' in sys.argv or '-l' in sys.argv:
+        use_loocv = True
+        print("Leave-One-Out Cross-Validation enabled")
+
+    # Run main with parsed arguments
+    main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
 
