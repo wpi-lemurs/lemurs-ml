@@ -20,7 +20,6 @@ Optional flags:
 """
 
 from src.data_processing.merge_passive_data_and_labels import (
-    merge_daily_screentime_features_with_suicide_risk,
     merge_daily_screentime_features_with_phq9,
     merge_daily_screentime_features_with_risk_labels,
     propagate_positive_labels
@@ -31,7 +30,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
@@ -86,22 +85,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     class_weight = 'balanced' if balanced_class_weight else None
 
-    print(f"\nData Summary:")
-    print(f"  Total rows: {len(data)}")
-    print(f"  Unique users: {data['app_user_id'].nunique()}")
-    print(f"  Class balancing: {'ENABLED (class_weight=balanced)' if balanced_class_weight else 'DISABLED (class_weight=None)'}")
-    print(f"  Label distribution (before propagation):")
-    print(f"    {data[label_col].value_counts().to_dict()}")
-
     # Apply label propagation if requested
     if propagate_labels:
-        print(f"\n  Applying label propagation for users with at least one '{positive_class}' label...")
         data = propagate_positive_labels(data, label_col, positive_class)
-
 
     # Check if we have both classes
     if data[label_col].nunique() < 2:
-        print(f"    WARNING: Only one class present ({data[label_col].unique()[0]}). Cannot train model.")
         return None
 
     # Check minimum samples per class
@@ -109,14 +98,11 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     min_class_count = class_counts.min()
 
     if min_class_count < 2:
-        print(f"    WARNING: Minority class has only {min_class_count} sample(s). Need at least 2 per class for train/test split.")
         return None
 
     if len(data) < 10:
-        print(f"    Insufficient data for modeling (need at least 10 samples, have {len(data)})")
         return None
 
-    print(f"\n  Training models for {time_window}-hour window ({prediction_task} prediction)...")
 
     # Prepare features and labels
     hour_cols = [f'hour_{i}' for i in range(time_window)]
@@ -133,8 +119,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     # Check if using LOOCV
     if use_loocv:
-        print(f"\n  Using Leave-One-User-Out Cross-Validation...")
-        print(f"  Number of users: {data['app_user_id'].nunique()}")
 
         # Initialize LOOCV
         logo = LeaveOneGroupOut()
@@ -159,11 +143,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
             # Skip fold if training or test set has only one class
             if y_train.nunique() < 2:
-                print(f"    Fold {fold_num} (user {test_user}): SKIPPED - training set has only one class")
                 continue
 
             if y_test.nunique() < 1:
-                print(f"    Fold {fold_num} (user {test_user}): SKIPPED - test set is empty")
                 continue
 
             successful_folds += 1
@@ -199,14 +181,11 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                     pass
 
             except Exception as e:
-                print(f"    Fold {fold_num} (user {test_user}): ERROR - {str(e)}")
                 continue
 
         if successful_folds == 0:
-            print(f"    WARNING: No successful folds. Cannot evaluate models.")
             return None
 
-        print(f"    Successfully completed {successful_folds}/{data['app_user_id'].nunique()} folds")
 
         # Convert to numpy arrays for evaluation
         all_y_test = np.array(all_y_test)
@@ -221,19 +200,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
         rf_cm = confusion_matrix(all_y_test, all_rf_preds, labels=label_order)
 
-        print(f"\n    Logistic Regression (LOOCV):")
-        print(f"      Accuracy: {lr_acc:.4f}")
-        print(f"      Classification Report:")
-        print("      " + "\n      ".join(classification_report(all_y_test, all_lr_preds, labels=label_order).split('\n')))
-        print(f"      Confusion Matrix:")
-        print(f"      {lr_cm}")
-
-        print(f"\n    Random Forest (LOOCV):")
-        print(f"      Accuracy: {rf_acc:.4f}")
-        print(f"      Classification Report:")
-        print("      " + "\n      ".join(classification_report(all_y_test, all_rf_preds, labels=label_order).split('\n')))
-        print(f"      Confusion Matrix:")
-        print(f"      {rf_cm}")
 
         # Store results
         results = {
@@ -262,31 +228,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['rf_f1_score'] = None
 
         # Feature importance (train on full dataset)
-        print(f"\n    Top 5 Most Important Hours (Random Forest - trained on full dataset):")
         rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
         rf_full.fit(X, y)
         feature_importance = pd.DataFrame({
             'hour': hour_cols,
             'importance': rf_full.feature_importances_
         }).sort_values('importance', ascending=False)
-        for idx, row in feature_importance.head(5).iterrows():
-            print(f"      {row['hour']}: {row['importance']:.4f}")
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
-        # Prediction distribution analysis
-        print(f"\n    Prediction Distribution Analysis:")
-        lr_pred_counts = dict(zip(*np.unique(all_lr_preds, return_counts=True)))
-        rf_pred_counts = dict(zip(*np.unique(all_rf_preds, return_counts=True)))
-        print(f"      Logistic Regression predictions: {lr_pred_counts}")
-        print(f"      Random Forest predictions: {rf_pred_counts}")
-        print(f"      Actual test labels: {dict(zip(*np.unique(all_y_test, return_counts=True)))}")
-
-        if balanced_class_weight:
-            print(f"\n    Class Balancing Summary:")
-            print(f"      Class weights were applied to help the model learn from minority class.")
-            print(f"      This increases the cost of misclassifying the minority class during training.")
-            print(f"      Effect: Models are encouraged to predict the minority class more often.")
 
         return results
 
@@ -297,33 +247,16 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 X, y, test_size=0.3, random_state=42, stratify=y
             )
         except ValueError as e:
-            print(f"    WARNING: Cannot stratify split (likely too few samples in minority class). Using random split.")
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=0.3, random_state=42, stratify=None
             )
 
         # Final check: ensure both train and test have both classes
         if y_train.nunique() < 2:
-            print(f"    WARNING: Training set only has one class. Cannot train model.")
             return None
 
         if y_test.nunique() < 2:
-            print(f"    WARNING: Test set only has one class. Results may not be meaningful.")
-
-        print(f"    Train set: {len(X_train)} samples, Test set: {len(X_test)} samples")
-        print(f"    Train labels: {y_train.value_counts().to_dict()}")
-        print(f"    Test labels: {y_test.value_counts().to_dict()}")
-
-        # Calculate and display class weights if balancing is enabled
-        if balanced_class_weight:
-            from sklearn.utils.class_weight import compute_class_weight
-            class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-            class_weight_dict = dict(zip(np.unique(y_train), class_weights))
-            print(f"\n    Class weights being applied:")
-            for label, weight in class_weight_dict.items():
-                count = (y_train == label).sum()
-                print(f"      {label}: {weight:.4f} (n={count})")
-            print(f"    Note: Higher weights are applied to minority class to balance the training")
+            pass  # Continue but note that results may not be meaningful
 
         results = {
             'time_window': time_window,
@@ -334,21 +267,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         }
 
         # Train Logistic Regression
-        print(f"\n    Logistic Regression:")
-        if balanced_class_weight:
-            print(f"      Training with class_weight='balanced' to handle class imbalance...")
         lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
         lr_model.fit(X_train, y_train)
         lr_pred = lr_model.predict(X_test)
         lr_acc = accuracy_score(y_test, lr_pred)
-        print(f"      Accuracy: {lr_acc:.4f}")
-        print(f"      Classification Report:")
-        print("      " + "\n      ".join(classification_report(y_test, lr_pred).split('\n')))
 
         # Generate confusion matrix with explicit label order
         lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
-        print(f"      Confusion Matrix:")
-        print(f"      {lr_cm}")
         results['lr_confusion_matrix'] = lr_cm.tolist()
 
         results['lr_accuracy'] = lr_acc
@@ -358,21 +283,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['lr_f1_score'] = None
 
         # Train Random Forest
-        print(f"\n    Random Forest:")
-        if balanced_class_weight:
-            print(f"      Training with class_weight='balanced' to handle class imbalance...")
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
         rf_model.fit(X_train, y_train)
         rf_pred = rf_model.predict(X_test)
         rf_acc = accuracy_score(y_test, rf_pred)
-        print(f"      Accuracy: {rf_acc:.4f}")
-        print(f"      Classification Report:")
-        print("      " + "\n      ".join(classification_report(y_test, rf_pred).split('\n')))
 
         # Generate confusion matrix with explicit label order (same as LR above)
         rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
-        print(f"      Confusion Matrix:")
-        print(f"      {rf_cm}")
         results['rf_confusion_matrix'] = rf_cm.tolist()
 
         results['rf_accuracy'] = rf_acc
@@ -382,23 +299,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['rf_f1_score'] = None
 
         # Feature importance for Random Forest
-        print(f"\n    Top 5 Most Important Hours (Random Forest):")
         feature_importance = pd.DataFrame({
             'hour': hour_cols,
             'importance': rf_model.feature_importances_
         }).sort_values('importance', ascending=False)
-        for idx, row in feature_importance.head(5).iterrows():
-            print(f"      {row['hour']}: {row['importance']:.4f}")
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
-        # Prediction distribution analysis
-        print(f"\n    Prediction Distribution Analysis:")
-        lr_pred_counts = dict(zip(*np.unique(lr_pred, return_counts=True)))
-        rf_pred_counts = dict(zip(*np.unique(rf_pred, return_counts=True)))
-        print(f"      Logistic Regression predictions: {lr_pred_counts}")
-        print(f"      Random Forest predictions: {rf_pred_counts}")
-        print(f"      Actual test labels: {y_test.value_counts().to_dict()}")
 
         return results
 
@@ -574,9 +481,6 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     all_results = []
 
     for hours in time_windows:
-        print(f"\n{'='*80}")
-        print(f"TIME WINDOW: {hours} hours before survey")
-        print(f"{'='*80}")
 
         # Get data for this time window using the appropriate merge function
         if use_generic:
