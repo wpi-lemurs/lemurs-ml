@@ -260,6 +260,9 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
     if not all_results:
         return
 
+    # Define balanced suffix early so it's available throughout the function
+    balanced_suffix = '_balanced' if balanced_class_weight else ''
+
     # Determine label names based on target type
     if target_type == 'phq9':
         labels = ['not_depressed', 'depressed']
@@ -306,13 +309,12 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     plt.tight_layout()
 
-    balanced_suffix = '_balanced' if balanced_class_weight else ''
-
     # Save figure
     output_filename = f'confusion_matrices_{target_type}{balanced_suffix}.png'
     output_path = data_dir / output_filename
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"\nConfusion matrices visualization saved to: {output_path}")
+    plt.close()  # Close the figure to free memory
 
     # Also create a summary plot showing only the best performing window
     if all_results:
@@ -353,6 +355,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         best_output_path = data_dir / best_output_filename
         plt.savefig(best_output_path, dpi=300, bbox_inches='tight')
         print(f"Best models confusion matrices saved to: {best_output_path}")
+        plt.close()  # Close the figure to free memory
 
 
 
