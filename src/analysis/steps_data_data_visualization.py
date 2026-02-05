@@ -1,7 +1,7 @@
 """
 Passive data completeness analysis
 - Loads steps from DB (via DatabaseService) only
-- Computes per-user per-day record counts over a 28-day study window
+- Computes per-user per-day record counts over the full study window
 - Identifies the most-complete, median, and least-complete users
 - Plots per-day counts for those three users and per-hour averages across users
 """
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from src.database_service import DatabaseService
 from datetime import timedelta
 
-STUDY_DAYS = 28
+# STUDY_DAYS = 28  # Removed the fixed 28-day constant
 
 
 def load_table_from_db(service: DatabaseService, table_name: str) -> pd.DataFrame:
@@ -76,28 +76,48 @@ def normalize_timestamp_column(df: pd.DataFrame, possible_cols=None):
 
 
 def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
-    """Return DataFrame with rows (app_user_id, day_index) and total steps for each day index 1..STUDY_DAYS.
+    """Return DataFrame with rows (app_user_id, day_index) and total steps for each day index.
     Also add a 'date' column that maps each day index to the calendar date (study_start + day-1).
+    Only includes data from November 15th, 2024 onwards.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
+    # Ensure the user column exists
     if app_user_col not in df.columns:
-        df['app_user_id'] = 'all'
-        app_user_col = 'app_user_id'
+        print(f"Warning: '{app_user_col}' not found in columns: {df.columns.tolist()}")
+        # Try to find any user-related column
+        possible_user_cols = [c for c in df.columns if 'user' in c.lower() or 'id' in c.lower()]
+        if possible_user_cols:
+            print(f"Using '{possible_user_cols[0]}' as user column")
+            app_user_col = possible_user_cols[0]
+        else:
+            df[app_user_col] = 'all'
 
     df = df.dropna(subset=[timestamp_col]).copy()
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
+    # Filter to only include dates from November 15th, 2024 onwards
+    cutoff_date = pd.Timestamp('2025-11-15')
+    df = df[df[timestamp_col] >= cutoff_date]
+
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
+
+    # Set study_start to November 15th, 2024
     if study_start is None:
-        min_ts = df[timestamp_col].min().normalize()
-        study_start = min_ts
+        study_start = pd.Timestamp('2025-11-15').normalize()
     else:
         study_start = pd.to_datetime(study_start).normalize()
 
     df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
-    df = df[(df['day'] >= 1) & (df['day'] <= STUDY_DAYS)]
+
+    # Calculate actual study duration from data instead of using fixed STUDY_DAYS
+    max_day = df['day'].max()
+    study_days = int(max_day) if max_day > 0 else 28
+
+    df = df[df['day'] >= 1]  # Remove the upper limit check
 
     # Find step count column
     numeric_cols = df.select_dtypes(include='number').columns.tolist()
@@ -115,7 +135,7 @@ def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: st
     all_rows = []
     for u in users:
         user_days = grouped[grouped[app_user_col] == u].set_index('day')['count']
-        for d in range(1, STUDY_DAYS + 1):
+        for d in range(1, study_days + 1):
             cnt = int(user_days.get(d, 0))
             date_for_d = (pd.to_datetime(study_start) + pd.Timedelta(days=d-1)).date()
             all_rows.append({app_user_col: u, 'day': d, 'count': cnt, 'date': date_for_d})
@@ -124,8 +144,9 @@ def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: st
 
 
 def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
-    """Return DataFrame with rows (app_user_id, day_index) and count of records for each day index 1..STUDY_DAYS.
+    """Return DataFrame with rows (app_user_id, day_index) and count of records for each day index.
     Also add a 'date' column that maps each day index to the calendar date (study_start + day-1).
+    Only includes data from November 15th, 2024 onwards.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
@@ -138,14 +159,26 @@ def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
+    # Filter to only include dates from November 15th, 2024 onwards
+    cutoff_date = pd.Timestamp('2025-11-15')
+    df = df[df[timestamp_col] >= cutoff_date]
+
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
+
+    # Set study_start to November 15th, 2024
     if study_start is None:
-        min_ts = df[timestamp_col].min().normalize()
-        study_start = min_ts
+        study_start = pd.Timestamp('2025-11-15').normalize()
     else:
         study_start = pd.to_datetime(study_start).normalize()
 
     df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
-    df = df[(df['day'] >= 1) & (df['day'] <= STUDY_DAYS)]
+
+    # Calculate actual study duration from data
+    max_day = df['day'].max()
+    study_days = int(max_day) if max_day > 0 else 28
+
+    df = df[df['day'] >= 1]  # Remove the upper limit check
 
     # Count records per day (not sum of values)
     grouped = df.groupby([app_user_col, 'day']).size().reset_index(name='count')
@@ -155,7 +188,7 @@ def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_
     all_rows = []
     for u in users:
         user_days = grouped[grouped[app_user_col] == u].set_index('day')['count']
-        for d in range(1, STUDY_DAYS + 1):
+        for d in range(1, study_days + 1):
             cnt = int(user_days.get(d, 0))
             date_for_d = (pd.to_datetime(study_start) + pd.Timedelta(days=d-1)).date()
             all_rows.append({app_user_col: u, 'day': d, 'count': cnt, 'date': date_for_d})
@@ -180,7 +213,7 @@ def plot_three_timelines(daily_counts: pd.DataFrame, users, app_user_col='app_us
     """Plot timelines for three users with record counts displayed on the line.
     X-axis shows calendar date only (MM-DD format).
     """
-    plt.figure(figsize=(16, 8))
+    plt.figure(figsize=(20, 8))
 
     colors = ['#228B22', '#C71585', '#F18F01']  # Forest Green, Dark Pink, Orange
     labels = ['Most Complete', 'Median', 'Least Complete']
@@ -190,7 +223,7 @@ def plot_three_timelines(daily_counts: pd.DataFrame, users, app_user_col='app_us
 
         # Plot line with markers
         plt.plot(user_df['day'], user_df['count'],
-                marker='o', markersize=8, linewidth=2,
+                marker='o', markersize=6, linewidth=2,
                 color=colors[idx], label=f'{labels[idx]}: {u}')
 
         # Add count labels above each point - increased vertical offset
@@ -202,7 +235,7 @@ def plot_three_timelines(daily_counts: pd.DataFrame, users, app_user_col='app_us
 
             plt.text(
                 row['day'], y, str(int(row['count'])),
-                ha='center', va='bottom', fontsize=9,
+                ha='center', va='bottom', fontsize=8,
                 color=colors[idx], fontweight='bold',
                 zorder=5,
                 bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.75)
@@ -217,14 +250,28 @@ def plot_three_timelines(daily_counts: pd.DataFrame, users, app_user_col='app_us
     plt.grid(True, alpha=0.3, linestyle='--')
 
     # Build xtick labels with dates only (MM-DD format)
-    days = list(range(1, STUDY_DAYS + 1))
+    max_day = int(daily_counts['day'].max())
+    min_day = int(daily_counts['day'].min())
+
+    # Show every Nth date to avoid overlap (adjust based on range)
+    days_range = max_day - min_day + 1
+    if days_range > 40:
+        step = 5
+    elif days_range > 20:
+        step = 3
+    else:
+        step = 2
+
+    days_to_show = list(range(min_day, max_day + 1, step))
+
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
-        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if date_map.get(d) else '' for d in days]
+        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if d in date_map else '' for d in days_to_show]
     else:
-        xtick_labels = [str(d) for d in days]
+        xtick_labels = [str(d) for d in days_to_show]
 
-    plt.xticks(days, xtick_labels, rotation=45, ha='right')
+    plt.xticks(days_to_show, xtick_labels, rotation=90, ha='center', fontsize=9)
+    plt.xlim(min_day - 1, max_day + 1)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -436,7 +483,7 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
     """Plot timelines for ALL users showing daily step counts.
     X-axis shows calendar date only (MM-DD format).
     """
-    plt.figure(figsize=(18, 10))
+    plt.figure(figsize=(22, 10))
 
     all_users = daily_counts[app_user_col].unique()
     colors = plt.cm.tab20(np.linspace(0, 1, len(all_users)))
@@ -446,7 +493,7 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
 
         # Plot line with smaller markers for readability
         plt.plot(user_df['day'], user_df['count'],
-                marker='o', markersize=4, linewidth=1.5,
+                marker='o', markersize=3, linewidth=1.2,
                 color=colors[idx], label=f'{user}', alpha=0.7)
 
         # Add count labels above each point using adaptive offset
@@ -460,7 +507,7 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
                 plt.text(
                     row['day'], y, f"{int(row['count'])}",
                     ha='center', va='bottom',
-                    fontsize=6,
+                    fontsize=5,
                     color=colors[idx],
                     fontweight='bold',
                     alpha=0.7,
@@ -479,15 +526,28 @@ def plot_all_users_timeline(daily_counts: pd.DataFrame, app_user_col='app_user_i
               bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
     plt.grid(True, alpha=0.3, linestyle='--')
 
-    # Build xtick labels with dates only
-    days = list(range(1, STUDY_DAYS + 1))
+    # Build xtick labels with dates only - show every Nth date
+    max_day = int(daily_counts['day'].max())
+    min_day = int(daily_counts['day'].min())
+
+    days_range = max_day - min_day + 1
+    if days_range > 40:
+        step = 5
+    elif days_range > 20:
+        step = 3
+    else:
+        step = 2
+
+    days_to_show = list(range(min_day, max_day + 1, step))
+
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
-        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if date_map.get(d) else '' for d in days]
+        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if d in date_map else '' for d in days_to_show]
     else:
-        xtick_labels = [str(d) for d in days]
+        xtick_labels = [str(d) for d in days_to_show]
 
-    plt.xticks(days, xtick_labels, rotation=45, ha='right')
+    plt.xticks(days_to_show, xtick_labels, rotation=90, ha='center', fontsize=8)
+    plt.xlim(min_day - 1, max_day + 1)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -498,7 +558,7 @@ def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_u
     """Plot timelines for ALL users showing daily record counts.
     X-axis shows calendar date only (MM-DD format).
     """
-    plt.figure(figsize=(18, 10))
+    plt.figure(figsize=(22, 10))
 
     all_users = daily_counts[app_user_col].unique()
     colors = plt.cm.tab20(np.linspace(0, 1, len(all_users)))
@@ -508,7 +568,7 @@ def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_u
 
         # Plot line with smaller markers for readability
         plt.plot(user_df['day'], user_df['count'],
-                marker='o', markersize=4, linewidth=1.5,
+                marker='o', markersize=3, linewidth=1.2,
                 color=colors[idx], label=f'{user}', alpha=0.7)
 
         # Add count labels above each point using adaptive offset
@@ -522,7 +582,7 @@ def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_u
                 plt.text(
                     row['day'], y, f"{int(row['count'])}",
                     ha='center', va='bottom',
-                    fontsize=6,
+                    fontsize=5,
                     color=colors[idx],
                     fontweight='bold',
                     alpha=0.7,
@@ -541,15 +601,28 @@ def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_u
               bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
     plt.grid(True, alpha=0.3, linestyle='--')
 
-    # Build xtick labels with dates only
-    days = list(range(1, STUDY_DAYS + 1))
+    # Build xtick labels with dates only - show every Nth date
+    max_day = int(daily_counts['day'].max())
+    min_day = int(daily_counts['day'].min())
+
+    days_range = max_day - min_day + 1
+    if days_range > 40:
+        step = 5
+    elif days_range > 20:
+        step = 3
+    else:
+        step = 2
+
+    days_to_show = list(range(min_day, max_day + 1, step))
+
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
-        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if date_map.get(d) else '' for d in days]
+        xtick_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d') if d in date_map else '' for d in days_to_show]
     else:
-        xtick_labels = [str(d) for d in days]
+        xtick_labels = [str(d) for d in days_to_show]
 
-    plt.xticks(days, xtick_labels, rotation=45, ha='right')
+    plt.xticks(days_to_show, xtick_labels, rotation=90, ha='center', fontsize=8)
+    plt.xlim(min_day - 1, max_day + 1)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -557,8 +630,8 @@ def plot_all_users_daily_records(daily_counts: pd.DataFrame, app_user_col='app_u
 
 
 def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path('passive_all_users_hourly_records.png')):
-    """Plot hourly total record counts for ALL users."""
-    fig, ax = plt.subplots(figsize=(18, 10))
+    """Plot hourly total record counts for all users."""
+    fig, ax = plt.subplots(figsize=(20, 10))
 
     all_users = hourly_df['user'].unique()
     colors = plt.cm.tab20(np.linspace(0, 1, len(all_users)))
@@ -567,37 +640,39 @@ def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
         ax.plot(user_df['hour'], user_df['total_records'],
-                marker='o', markersize=4, linewidth=1.5,
-                color=colors[idx], label=f'{user}',
-                alpha=0.7, linestyle='-')
+                marker='o', markersize=4, linewidth=1.2,
+                color=colors[idx], label=f'{user}', alpha=0.7)
 
+        # Add count labels above each point
         for _, row in user_df.iterrows():
-            if row['total_records'] > 0.5:
+            if row['total_records'] > 0:
                 min_offset = 0.3
-                rel_offset = min(row['total_records'] * 0.04, 1.0)
-                stagger = 0.3 * (idx % 3)
-                y = row['total_records'] + min_offset + rel_offset + stagger
+                rel_offset = min(row['total_records'] * 0.05, 2.0)
+                y = row['total_records'] + min_offset + rel_offset
 
                 ax.text(
                     row['hour'], y, f"{int(row['total_records'])}",
-                    ha='center', va='bottom', fontsize=6,
-                    color=colors[idx], fontweight='bold',
-                    alpha=0.75, zorder=5,
-                    bbox=dict(boxstyle='round,pad=0.08', fc='white', ec='none', alpha=0.6)
+                    ha='center', va='bottom',
+                    fontsize=5,
+                    color=colors[idx],
+                    fontweight='bold',
+                    alpha=0.7,
+                    zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.1',
+                              fc='white', ec='none', alpha=0.6)
                 )
 
-    ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
+    ax.set_xlabel('Hour of Day', fontsize=12, fontweight='bold')
     ax.set_ylabel('Total Records per Hour', fontsize=12, fontweight='bold')
-
-    plt.title('Hourly Total Record Counts for All Participants',
-             fontsize=14, fontweight='bold', pad=20)
+    ax.set_title('Hourly Total Record Counts for All Participants',
+                 fontsize=14, fontweight='bold', pad=20)
 
     ax.set_xticks(range(0, 24))
     ax.set_xticklabels([f'{h:02d}:00' for h in range(24)], rotation=45, ha='right')
 
+    plt.legend(title='Participant ID', fontsize=7, title_fontsize=9,
+               bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
     ax.grid(axis='both', alpha=0.3, linestyle='--')
-    ax.legend(title='Participant ID', fontsize=8, title_fontsize=10,
-             bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -606,8 +681,8 @@ def plot_all_users_hourly_records(hourly_df: pd.DataFrame, out_path: Path = Path
 
 
 def plot_all_users_hourly_steps(hourly_df: pd.DataFrame, out_path: Path = Path('passive_all_users_hourly_steps.png')):
-    """Plot hourly total steps for ALL users."""
-    fig, ax = plt.subplots(figsize=(18, 10))
+    """Plot hourly total steps for all users."""
+    fig, ax = plt.subplots(figsize=(20, 10))
 
     all_users = hourly_df['user'].unique()
     colors = plt.cm.tab20(np.linspace(0, 1, len(all_users)))
@@ -616,37 +691,39 @@ def plot_all_users_hourly_steps(hourly_df: pd.DataFrame, out_path: Path = Path('
         user_df = hourly_df[hourly_df['user'] == user].sort_values('hour')
 
         ax.plot(user_df['hour'], user_df['total_steps'],
-                marker='s', markersize=4, linewidth=1.5,
-                color=colors[idx], label=f'{user}',
-                alpha=0.7, linestyle='-')
+                marker='s', markersize=4, linewidth=1.2,
+                color=colors[idx], label=f'{user}', alpha=0.7)
 
+        # Add count labels above each point
         for _, row in user_df.iterrows():
             if row['total_steps'] > 10:
-                min_offset = 10
+                min_offset = 5
                 rel_offset = min(row['total_steps'] * 0.03, 30)
-                stagger = 20 * (idx % 3)
-                y = row['total_steps'] + min_offset + rel_offset + stagger
+                y = row['total_steps'] + min_offset + rel_offset
 
                 ax.text(
                     row['hour'], y, f"{int(row['total_steps'])}",
-                    ha='center', va='bottom', fontsize=6,
-                    color=colors[idx], fontweight='bold',
-                    alpha=0.75, zorder=5,
-                    bbox=dict(boxstyle='round,pad=0.08', fc='white', ec='none', alpha=0.6)
+                    ha='center', va='bottom',
+                    fontsize=5,
+                    color=colors[idx],
+                    fontweight='bold',
+                    alpha=0.7,
+                    zorder=5,
+                    bbox=dict(boxstyle='round,pad=0.1',
+                              fc='white', ec='none', alpha=0.6)
                 )
 
-    ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold')
+    ax.set_xlabel('Hour of Day', fontsize=12, fontweight='bold')
     ax.set_ylabel('Total Steps per Hour', fontsize=12, fontweight='bold')
-
-    plt.title('Hourly Total Steps for All Participants',
-             fontsize=14, fontweight='bold', pad=20)
+    ax.set_title('Hourly Total Steps for All Participants',
+                 fontsize=14, fontweight='bold', pad=20)
 
     ax.set_xticks(range(0, 24))
     ax.set_xticklabels([f'{h:02d}:00' for h in range(24)], rotation=45, ha='right')
 
+    plt.legend(title='Participant ID', fontsize=7, title_fontsize=9,
+               bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
     ax.grid(axis='both', alpha=0.3, linestyle='--')
-    ax.legend(title='Participant ID', fontsize=8, title_fontsize=10,
-             bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -658,11 +735,14 @@ def calculate_completeness_score(daily_counts: pd.DataFrame, app_user_col='app_u
     """Calculate data completeness score for each user.
     Returns DataFrame with user, days_with_data, completeness_percentage, and total_records.
     """
+    max_day = daily_counts['day'].max()
+    study_days = int(max_day) if max_day > 0 else 28
+
     summary = []
     for user in daily_counts[app_user_col].unique():
         user_df = daily_counts[daily_counts[app_user_col] == user]
         days_with_data = (user_df['count'] > 0).sum()
-        completeness_pct = (days_with_data / STUDY_DAYS) * 100
+        completeness_pct = (days_with_data / study_days) * 100
         total_records = user_df['count'].sum()
 
         summary.append({
@@ -721,6 +801,9 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
     # Convert to binary (has data = 1, no data = 0)
     binary_data = (pivot > 0).astype(int)
 
+    # Calculate study days from data
+    study_days = int(daily_counts['day'].max())
+
     fig, ax = plt.subplots(figsize=(18, max(8, len(binary_data) * 0.5)))
 
     # Create heatmap with custom colors
@@ -728,8 +811,8 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
     im = ax.imshow(binary_data, cmap=cmap, aspect='auto', interpolation='nearest')
 
     # Set ticks and labels
-    ax.set_xticks(range(STUDY_DAYS))
-    ax.set_xticklabels(range(1, STUDY_DAYS + 1))
+    ax.set_xticks(range(study_days))
+    ax.set_xticklabels(range(1, study_days + 1))
     ax.set_yticks(range(len(binary_data)))
     ax.set_yticklabels(binary_data.index)
 
@@ -737,7 +820,7 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
         date_labels = [pd.to_datetime(date_map.get(d + 1, '')).strftime('%m-%d')
-                       if date_map.get(d + 1) else '' for d in range(STUDY_DAYS)]
+                       if date_map.get(d + 1) else '' for d in range(study_days)]
         ax.set_xticklabels(date_labels, rotation=45, ha='right')
 
     ax.set_xlabel('Date', fontsize=12, fontweight='bold')
@@ -749,7 +832,7 @@ def plot_availability_heatmap(daily_counts: pd.DataFrame, app_user_col='app_user
     cbar.ax.set_yticklabels(['No Data', 'Has Data'])
 
     # Add grid
-    ax.set_xticks([x - 0.5 for x in range(1, STUDY_DAYS)], minor=True)
+    ax.set_xticks([x - 0.5 for x in range(1, study_days)], minor=True)
     ax.set_yticks([y - 0.5 for y in range(1, len(binary_data))], minor=True)
     ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
 
@@ -764,6 +847,9 @@ def plot_daily_participation(daily_counts: pd.DataFrame, app_user_col='app_user_
     """Plot number of participants with data each day."""
     daily_participation = daily_counts[daily_counts['count'] > 0].groupby('day')[app_user_col].nunique()
     total_users = daily_counts[app_user_col].nunique()
+
+    # Calculate study days from data
+    study_days = int(daily_counts['day'].max())
 
     fig, ax = plt.subplots(figsize=(16, 8))
 
@@ -786,8 +872,8 @@ def plot_daily_participation(daily_counts: pd.DataFrame, app_user_col='app_user_
     if 'date' in daily_counts.columns:
         date_map = daily_counts.drop_duplicates('day').set_index('day')['date'].to_dict()
         date_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d')
-                       if date_map.get(d) else '' for d in range(1, STUDY_DAYS + 1)]
-        ax.set_xticks(range(1, STUDY_DAYS + 1))
+                       if date_map.get(d) else '' for d in range(1, study_days + 1)]
+        ax.set_xticks(range(1, study_days + 1))
         ax.set_xticklabels(date_labels, rotation=45, ha='right')
 
     ax.set_xlabel('Date', fontsize=12, fontweight='bold')
@@ -826,7 +912,7 @@ def plot_completeness_distribution(completeness_df: pd.DataFrame,
 
     ax.set_xlabel('Completeness (%)', fontsize=12, fontweight='bold')
     ax.set_ylabel('Number of Participants', fontsize=12, fontweight='bold')
-    ax.set_title('Distribution of Data Completeness Scores', fontsize=14, fontweight='bold', pad=20)
+    ax.set_title('Distribution of Data Completeness Scores', fontsize=14, fontweight='bold')
     ax.set_xticks([0, 25, 50, 75, 90, 100])
     ax.grid(axis='y', alpha=0.3)
 
@@ -849,6 +935,9 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
             print('No steps data found in database.')
             return None
 
+        print(f"Steps data columns: {steps.columns.tolist()}")
+        print(f"Steps data shape: {steps.shape}")
+
         # Load umass_id mapping table
         print("Loading umass_id mapping table...")
         id_mapping = load_table_from_db(service, 'umass_id')
@@ -857,7 +946,9 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
             print(f"Loaded {len(id_mapping)} ID mappings")
             # Map app_user_id to umass_id in steps data
             steps = map_to_umass_ids(steps, id_mapping, 'app_user_id')
+            # DO NOT RENAME - keep as 'app_user_id' so all downstream functions work
             print("Mapped app_user_id to umass_id in steps data")
+            print(f"Steps columns after mapping: {steps.columns.tolist()}")
         else:
             print("Warning: Could not load umass_id mapping, using app_user_id")
 
@@ -877,7 +968,14 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         print('No timestamp column found in steps data.')
         return None
 
-    daily_counts = per_user_daily_counts(steps, ts_col)
+    daily_counts = per_user_daily_counts(steps, ts_col, app_user_col='app_user_id')
+
+    print(f"Daily counts columns: {daily_counts.columns.tolist()}")
+    print(f"Daily counts shape: {daily_counts.shape}")
+
+    if daily_counts.empty:
+        print("No daily counts generated.")
+        return None
 
     # Debug: Print all unique users found (now showing umass_id)
     all_unique_users = daily_counts['app_user_id'].unique().tolist()
