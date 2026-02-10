@@ -324,6 +324,11 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                         label_column=label_col,
                         hours_before_survey=window
                     )
+
+                    # Filter out N/A labels for sleep (afternoon surveys without sleep data)
+                    if self.target_type == 'sleep' and not merged.empty:
+                        merged = merged[merged['sleep_label'] != 'N/A']
+
                     if self.propagate_labels and not merged.empty:
                         merged = propagate_positive_labels(
                             merged, label_col, 'at_risk'

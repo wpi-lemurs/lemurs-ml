@@ -864,6 +864,8 @@ def main():
     # Create hourly aggregated health data with sleep risk labels
     print("\nCreating hourly aggregated health data with sleep risk labels...")
     hourly_sleep_risk_data = merge_hourly_health_with_risk_labels(fill_method=None, label_column='sleep_label')
+    # drop afternoon surveys where sleep_label is N/A
+    hourly_sleep_risk_data = hourly_sleep_risk_data[hourly_sleep_risk_data['sleep_label'] != 'N/A']
     print(hourly_sleep_risk_data.head(10))
     print(f"\nTotal rows with sleep risk labels: {len(hourly_sleep_risk_data)}")
     if not hourly_sleep_risk_data.empty:
@@ -900,6 +902,8 @@ def main():
     # Create hourly aggregated screentime data with sleep risk labels
     print("\nCreating hourly aggregated screentime data with sleep risk labels...")
     hourly_screentime_sleep_risk_data = merge_hourly_screentime_with_risk_labels(fill_method=None, label_column='sleep_label')
+    # drop afternoon surveys where sleep_label is N/A
+    hourly_screentime_sleep_risk_data = hourly_screentime_sleep_risk_data[hourly_screentime_sleep_risk_data['sleep_label'] != 'N/A']
     print(hourly_screentime_sleep_risk_data.head(10))
     print(f"\nTotal rows with sleep risk labels: {len(hourly_screentime_sleep_risk_data)}")
     if not hourly_screentime_sleep_risk_data.empty:
