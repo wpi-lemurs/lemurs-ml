@@ -80,6 +80,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         positive_class = 'at_risk'
         output_prefix = 'daily_screentime_sleep'
         prediction_task = 'Sleep Risk'
+        # drop N/A risk label rows with afternoon data
+        data = data[data['sleep_label'] != 'N/A']
     else:
         raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
 

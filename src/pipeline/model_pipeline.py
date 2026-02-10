@@ -27,7 +27,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, roc_auc_score
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -146,7 +146,7 @@ class ScreentimeModelPipeline:
 
         model_map = {
             'logistic_regression': LogisticRegression(
-                max_iter=1000,
+                max_iter=5000,
                 random_state=self.random_state,
                 class_weight=class_weight
             ),
@@ -259,6 +259,14 @@ class ScreentimeModelPipeline:
         positive_class = label_config['positive_class']
         negative_class = label_config['negative_class']
 
+        # Filter out N/A labels for sleep (afternoon surveys without sleep data)
+        if self.target_type == 'sleep' and label_col in data.columns:
+            original_size = len(data)
+            data = data[data[label_col] != 'N/A'].copy()
+            filtered_count = original_size - len(data)
+            if filtered_count > 0:
+                print(f"Filtered out {filtered_count} rows with N/A sleep labels")
+
         # Prepare features and labels
         exclude_cols = [
             'app_user_id', 'survey_response_id', 'timestamp', 'survey_timestamp',
@@ -344,12 +352,39 @@ class ScreentimeModelPipeline:
             # Predict
             y_pred = model.predict(X_test)
 
+            # Get probability predictions for AUC if available
+            try:
+                if hasattr(model, 'predict_proba'):
+                    y_proba = model.predict_proba(X_test)[:, 1]
+                elif hasattr(model, 'decision_function'):
+                    y_proba = model.decision_function(X_test)
+                else:
+                    y_proba = None
+            except:
+                y_proba = None
+
             # Evaluate
             acc = accuracy_score(y_test, y_pred)
+
+            # Calculate F1 score
             try:
                 f1 = f1_score(y_test, y_pred, pos_label=positive_class, average='binary')
-            except:
+            except Exception as e:
+                print(f"  Warning: Could not calculate F1 score: {e}")
+                print(f"  Unique values in y_test: {set(y_test)}")
+                print(f"  Unique values in y_pred: {set(y_pred)}")
+                print(f"  Expected positive_class: {positive_class}")
                 f1 = None
+
+            # Calculate AUC score
+            auc = None
+            if y_proba is not None:
+                try:
+                    # Create binary labels for AUC calculation
+                    y_test_binary = (y_test == positive_class).astype(int)
+                    auc = roc_auc_score(y_test_binary, y_proba)
+                except Exception as e:
+                    print(f"  Warning: Could not calculate AUC: {e}")
 
             cm = confusion_matrix(
                 y_test, y_pred,
@@ -359,6 +394,7 @@ class ScreentimeModelPipeline:
             model_results[model_name] = {
                 'accuracy': acc,
                 'f1_score': f1,
+                'roc_auc': auc,
                 'confusion_matrix': cm.tolist(),
                 'train_samples': len(X_train),
                 'test_samples': len(X_test)
@@ -368,6 +404,8 @@ class ScreentimeModelPipeline:
             print(f"  Accuracy: {acc:.4f}")
             if f1 is not None:
                 print(f"  F1 Score: {f1:.4f}")
+            if auc is not None:
+                print(f"  AUC: {auc:.4f}")
 
         return model_results
 
@@ -388,6 +426,7 @@ class ScreentimeModelPipeline:
         for model_name, model in self.models.items():
             all_y_test = []
             all_y_pred = []
+            all_y_proba = []
             successful_folds = 0
 
             for train_idx, test_idx in logo.split(X, y, groups):
@@ -403,8 +442,18 @@ class ScreentimeModelPipeline:
                     model.fit(X_train, y_train)
                     y_pred = model.predict(X_test)
 
+                    # Get probabilities for AUC if available
+                    if hasattr(model, 'predict_proba'):
+                        y_proba = model.predict_proba(X_test)[:, 1]
+                    elif hasattr(model, 'decision_function'):
+                        y_proba = model.decision_function(X_test)
+                    else:
+                        y_proba = None
+
                     all_y_test.extend(y_test)
                     all_y_pred.extend(y_pred)
+                    if y_proba is not None:
+                        all_y_proba.extend(y_proba)
                     successful_folds += 1
                 except:
                     continue
@@ -418,10 +467,27 @@ class ScreentimeModelPipeline:
             all_y_pred = np.array(all_y_pred)
 
             acc = accuracy_score(all_y_test, all_y_pred)
+
+            # Calculate F1 score
             try:
                 f1 = f1_score(all_y_test, all_y_pred, pos_label=positive_class, average='binary')
-            except:
+            except Exception as e:
+                print(f"  Warning: Could not calculate F1 score: {e}")
+                print(f"  Unique values in all_y_test: {set(all_y_test)}")
+                print(f"  Unique values in all_y_pred: {set(all_y_pred)}")
+                print(f"  Expected positive_class: {positive_class}")
                 f1 = None
+
+            # Calculate AUC score
+            auc = None
+            if len(all_y_proba) > 0:
+                try:
+                    all_y_proba = np.array(all_y_proba)
+                    # Create binary labels for AUC calculation
+                    y_test_binary = (all_y_test == positive_class).astype(int)
+                    auc = roc_auc_score(y_test_binary, all_y_proba)
+                except Exception as e:
+                    print(f"  Warning: Could not calculate AUC: {e}")
 
             cm = confusion_matrix(
                 all_y_test, all_y_pred,
@@ -431,6 +497,7 @@ class ScreentimeModelPipeline:
             model_results[model_name] = {
                 'accuracy': acc,
                 'f1_score': f1,
+                'roc_auc': auc,
                 'confusion_matrix': cm.tolist(),
                 'successful_folds': successful_folds,
                 'cv_method': 'LOOCV'
@@ -440,6 +507,8 @@ class ScreentimeModelPipeline:
             print(f"  Accuracy: {acc:.4f}")
             if f1 is not None:
                 print(f"  F1 Score: {f1:.4f}")
+            if auc is not None:
+                print(f"  AUC: {auc:.4f}")
             print(f"  Successful folds: {successful_folds}")
 
         return model_results
