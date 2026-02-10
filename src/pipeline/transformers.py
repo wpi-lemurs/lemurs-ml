@@ -510,3 +510,149 @@ class MissingValueHandler(BaseEstimator, TransformerMixin):
             return _handle_missing(X)
 
 
+class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
+    """
+    Merges traditional hourly screentime features AND sub-window category features with labels.
+
+    This transformer creates a COMBINED feature set with:
+    1. Traditional hourly screentime features (hour_0, hour_1, ..., hour_N)
+    2. Sub-window category features calculated from app usage patterns:
+       - Most used app category per sub-window
+       - Time spent in that category
+       - Number of unique apps used
+
+    For example, with lookback_hours=12 and subwindow_hours=3:
+    - 12 hourly features (hour_0 through hour_11)
+    - 12 sub-window features (4 sub-windows × 3 features each)
+    - Total: 24 features + metadata/labels
+
+    Parameters:
+    -----------
+    target_type : str, default='suicide_risk'
+        Type of target: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
+    lookback_hours : int, default=12
+        Total hours to look back from survey
+    subwindow_hours : int, default=3
+        Size of each sub-window in hours
+    propagate_labels : bool, default=False
+        Whether to propagate positive labels to all user entries
+    """
+
+    def __init__(self, target_type='suicide_risk', lookback_hours=12,
+                 subwindow_hours=3, propagate_labels=False):
+        self.target_type = target_type
+        self.lookback_hours = lookback_hours
+        self.subwindow_hours = subwindow_hours
+        self.propagate_labels = propagate_labels
+
+    def fit(self, X, y=None):
+        """Fit does nothing, returns self."""
+        return self
+
+    def transform(self, X=None):
+        """
+        Merge sub-window features with traditional hourly features and labels.
+
+        This combines BOTH:
+        - Traditional hourly screentime features (hour_0, hour_1, etc.)
+        - Sub-window category features (most_used_category, time, num_apps)
+
+        Parameters:
+        -----------
+        X : None
+            Ignored - the merge functions extract data internally
+
+        Returns:
+        --------
+        dict : Dictionary with single key (lookback_hours) mapping to DataFrame
+               DataFrame contains both hourly features AND sub-window features
+        """
+        from src.data_processing.merge_passive_data_and_labels import (
+            merge_subwindow_screentime_features_with_risk_labels,
+            merge_subwindow_screentime_features_with_phq9,
+            merge_daily_screentime_features_with_risk_labels,
+            merge_daily_screentime_features_with_phq9,
+            propagate_positive_labels
+        )
+        import pandas as pd
+
+        # Step 1: Get traditional hourly screentime features
+        if self.target_type == 'phq9':
+            hourly_features = merge_daily_screentime_features_with_phq9(
+                hours_before_survey=self.lookback_hours
+            )
+            label_col = 'severity_label'
+            positive_class = 'depressed'
+        else:
+            # Risk labels
+            label_col_map = {
+                'suicide_risk': 'suicide_risk_label',
+                'self_harm': 'self_harm_risk_label',
+                'sleep': 'sleep_label'
+            }
+            label_col = label_col_map[self.target_type]
+
+            hourly_features = merge_daily_screentime_features_with_risk_labels(
+                label_column=label_col,
+                hours_before_survey=self.lookback_hours
+            )
+            positive_class = 'at_risk'
+
+        # Step 2: Get sub-window category features
+        if self.target_type == 'phq9':
+            subwindow_features = merge_subwindow_screentime_features_with_phq9(
+                lookback_hours=self.lookback_hours,
+                subwindow_hours=self.subwindow_hours
+            )
+        else:
+            subwindow_features = merge_subwindow_screentime_features_with_risk_labels(
+                label_column=label_col,
+                lookback_hours=self.lookback_hours,
+                subwindow_hours=self.subwindow_hours
+            )
+
+        # Step 3: Merge both feature sets
+        # Merge on common columns: app_user_id and timestamp/survey_timestamp
+        if hourly_features.empty or subwindow_features.empty:
+            print("Warning: One of the feature sets is empty, returning hourly features only")
+            merged = hourly_features
+        else:
+            # Identify merge keys
+            merge_keys = ['app_user_id']
+
+            # Handle different timestamp column names
+            if 'survey_timestamp' in hourly_features.columns and 'timestamp' in subwindow_features.columns:
+                # Rename for merge
+                subwindow_features = subwindow_features.rename(columns={'timestamp': 'survey_timestamp'})
+                merge_keys.append('survey_timestamp')
+            elif 'timestamp' in hourly_features.columns and 'timestamp' in subwindow_features.columns:
+                merge_keys.append('timestamp')
+            elif 'survey_timestamp' in hourly_features.columns and 'survey_timestamp' in subwindow_features.columns:
+                merge_keys.append('survey_timestamp')
+
+            # Merge the dataframes
+            # Drop label column from subwindow_features to avoid duplicate
+            subwindow_cols_to_keep = [col for col in subwindow_features.columns
+                                     if col not in [label_col, 'survey_response_id'] or col in merge_keys]
+
+            merged = pd.merge(
+                hourly_features,
+                subwindow_features[subwindow_cols_to_keep],
+                on=merge_keys,
+                how='inner'
+            )
+
+            print(f"Combined features: {len([c for c in merged.columns if c.startswith('hour_')])} hourly + "
+                  f"{len([c for c in merged.columns if c.startswith(('most_used', 'num_apps'))])} sub-window features")
+
+        # Filter out N/A labels for sleep
+        if self.target_type == 'sleep' and not merged.empty:
+            merged = merged[merged['sleep_label'] != 'N/A']
+
+
+        # Apply label propagation if requested
+        if self.propagate_labels and not merged.empty:
+            merged = propagate_positive_labels(merged, label_col, positive_class)
+
+        # Return as dict with lookback_hours as key (for consistency with other pipelines)
+        return {self.lookback_hours: merged}

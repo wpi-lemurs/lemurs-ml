@@ -36,7 +36,8 @@ from src.pipeline.transformers import (
     ScreentimeProcessor,
     HealthDataProcessor,
     LabelExtractor,
-    FeatureLabelMerger
+    FeatureLabelMerger,
+    SubWindowFeatureLabelMerger
 )
 
 
@@ -394,4 +395,55 @@ def get_pipeline_for_task(
     return task_map[task]()
 
 
+def create_subwindow_pipeline(
+    target_type='suicide_risk',
+    lookback_hours=12,
+    subwindow_hours=3,
+    propagate_labels=False
+):
+    """
+    Create a pipeline for mental health prediction using sub-window screentime features.
 
+    This pipeline uses app category-based features from sub-windows within a
+    larger lookback period. For example, with lookback_hours=12 and subwindow_hours=3,
+    it creates 4 sub-windows and calculates for each:
+    - Most used app category
+    - Time in that category
+    - Number of apps used
+
+    Parameters:
+    -----------
+    target_type : str, default='suicide_risk'
+        Target to predict: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
+    lookback_hours : int, default=12
+        Total hours to look back from survey
+    subwindow_hours : int, default=3
+        Size of each sub-window in hours
+    propagate_labels : bool, default=False
+        Whether to propagate positive labels
+
+    Returns:
+    --------
+    Pipeline : Configured scikit-learn pipeline
+
+    Example:
+    --------
+    >>> pipeline = create_subwindow_pipeline(
+    ...     target_type='sleep',
+    ...     lookback_hours=12,
+    ...     subwindow_hours=3
+    ... )
+    >>> pipeline.fit(None)
+    >>> data = pipeline.transform(None)
+    >>> # data is a dict with lookback_hours as key and DataFrame as value
+    """
+    steps = [
+        ('merge_subwindow_features_labels', SubWindowFeatureLabelMerger(
+            target_type=target_type,
+            lookback_hours=lookback_hours,
+            subwindow_hours=subwindow_hours,
+            propagate_labels=propagate_labels
+        ))
+    ]
+
+    return Pipeline(steps)
