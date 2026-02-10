@@ -2,9 +2,14 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from google_play_scraper import app
-from src.database_service import DatabaseService
 import pandas as pd
+from src.database_service import DatabaseService
+
+try:
+    from google_play_scraper import app as play_store_app
+except ImportError:
+    play_store_app = None
+    print("Warning: google_play_scraper not installed. Will use system categorization only.")
 
 '''
 This script categorizes apps from screentime data using Google Play Store categories. It currently keeps the categories
@@ -13,28 +18,20 @@ and pull from the csv to combine certain categories (e.g., all game categories i
 photography + video players into 'Media' category).
 '''
 
-# extract screentime app data
-service = DatabaseService()
-screentime_app_data = service.extract_from_database("screentime_app")
-
-def categorize_apps(screentime_app_df):
-    '''
-    Input a dataframe of screentime app data and create a new column for app categories
-    Return the dataframe with the new column
-    '''
-    for app_name in screentime_app_df['app_name'].unique().tolist():
-        try:
-            category = app(app_name)['genreId']
-        except Exception as e:
-            # fallback to system app categorization
-            category = categorize_system_app(app_name)
-        # update category for all rows with this app_name
-        screentime_app_df.loc[screentime_app_df['app_name'] == app_name, 'app_category'] = category
-    
-    return screentime_app_df
 
 def categorize_system_app(app_name):
-    # categorize system apps using common app_name keywords
+    """
+    Categorize system apps using common app_name keywords.
+
+    Parameters:
+    -----------
+    app_name : str
+        The app name/package to categorize
+
+    Returns:
+    --------
+    str : App category
+    """
     p = app_name.lower()
 
     # Lemurs app
@@ -75,11 +72,71 @@ def categorize_system_app(app_name):
                      'com.oplus', 'com.vivo', 'com.motorola', 'com.xiaomi')):
         return 'TOOLS'
 
-    print(f"Could not categorize system app: {app_name}. Assigning 'UNKNOWN' category.")
+    # print(f"Could not categorize system app: {app_name}. Assigning 'UNKNOWN' category.")
     return 'UNKNOWN'
 
-categorized_df = categorize_apps(screentime_app_data)
 
-# save categorized data to data folder
-output_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'screentime_app_categorized.csv')
-categorized_df.to_csv(output_path, index=False)
+def categorize_apps(screentime_app_df):
+    """
+    Input a dataframe of screentime app data and create a new column for app categories.
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame
+        DataFrame with screentime app data containing 'app_name' column
+
+    Returns:
+    --------
+    DataFrame : The input DataFrame with 'app_category' column added
+    """
+    # Make a copy to avoid modifying the original
+    df = screentime_app_df.copy()
+
+    for app_name in df['app_name'].unique().tolist():
+        category = None
+
+        # Try Google Play Store first if available
+        if play_store_app is not None:
+            try:
+                category = play_store_app(app_name)['genreId']
+            except Exception as e:
+                pass  # Fall through to system categorization
+
+        # Fallback to system app categorization
+        if category is None:
+            category = categorize_system_app(app_name)
+
+        # update category for all rows with this app_name
+        df.loc[df['app_name'] == app_name, 'app_category'] = category
+
+    return df
+
+
+def get_categorized_screentime_data():
+    """
+    Extract screentime app data from database and categorize it.
+
+    This function replaces the need for a CSV file by directly extracting
+    and categorizing data from the database.
+
+    Returns:
+    --------
+    DataFrame : Categorized screentime app data
+    """
+    service = DatabaseService()
+    screentime_app_data = service.extract_from_database("screentime_app")
+    service.disconnect()
+
+    categorized_df = categorize_apps(screentime_app_data)
+    return categorized_df
+
+
+# When run as a script, save to CSV for offline use (optional)
+if __name__ == "__main__":
+    categorized_df = get_categorized_screentime_data()
+
+    # save categorized data to data folder
+    output_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'screentime_app_categorized.csv')
+    categorized_df.to_csv(output_path, index=False)
+    print(f"Saved categorized data to {output_path}")
+    print(f"Total records: {len(categorized_df):,}")

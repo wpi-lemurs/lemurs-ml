@@ -35,7 +35,8 @@ import seaborn as sns
 
 from src.pipeline.mental_health_pipeline import (
     create_screentime_risk_pipeline,
-    create_screentime_phq9_pipeline
+    create_screentime_phq9_pipeline,
+    create_subwindow_pipeline
 )
 from src.config import DATA_DIR
 
@@ -52,17 +53,26 @@ class ScreentimeModelPipeline:
     target_type : str, default='suicide_risk'
         Target to predict: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
     time_windows : list of int, default=[3, 6, 9, 12]
-        Hours before survey to use for features
+        Hours before survey to use for features (ignored if use_subwindows=True)
     models : list of str or dict, default=['logistic_regression', 'random_forest']
         Models to train. Can be list of names or dict of {name: model_instance}
     fill_method : str or None, default='zero'
-        Method for handling missing values
+        Method for handling missing values (only applies to traditional hourly features)
     propagate_labels : bool, default=False
         Whether to propagate positive labels
     balanced_class_weight : bool, default=False
         Whether to use balanced class weights
     use_loocv : bool, default=False
         Whether to use leave-one-user-out cross-validation
+    use_subwindows : bool, default=False
+        Whether to ADD sub-window category features to traditional hourly features.
+        When True, combines BOTH hourly screentime (hour_0, hour_1, etc.) AND
+        sub-window app category features (most_used_category, time, num_apps).
+        This provides richer information than either approach alone.
+    lookback_hours : int, default=12
+        Total lookback hours for sub-window features (only if use_subwindows=True)
+    subwindow_hours : int, default=3
+        Size of each sub-window in hours (only if use_subwindows=True)
     test_size : float, default=0.3
         Test set size for train/test split (ignored if use_loocv=True)
     random_state : int, default=42
@@ -102,6 +112,9 @@ class ScreentimeModelPipeline:
         propagate_labels=False,
         balanced_class_weight=False,
         use_loocv=False,
+        use_subwindows=False,
+        lookback_hours=12,
+        subwindow_hours=3,
         test_size=0.3,
         random_state=42,
         save_confusion_matrices=True
@@ -112,6 +125,9 @@ class ScreentimeModelPipeline:
         self.propagate_labels = propagate_labels
         self.balanced_class_weight = balanced_class_weight
         self.use_loocv = use_loocv
+        self.use_subwindows = use_subwindows
+        self.lookback_hours = lookback_hours
+        self.subwindow_hours = subwindow_hours
         self.test_size = test_size
         self.random_state = random_state
         self.save_confusion_matrices = save_confusion_matrices
@@ -122,7 +138,15 @@ class ScreentimeModelPipeline:
         self.models = self._initialize_models(models)
 
         # Create data processing pipeline
-        if target_type == 'phq9':
+        if use_subwindows:
+            # Use sub-window pipeline
+            self.data_pipeline = create_subwindow_pipeline(
+                target_type=self.target_type,
+                lookback_hours=self.lookback_hours,
+                subwindow_hours=self.subwindow_hours,
+                propagate_labels=self.propagate_labels
+            )
+        elif target_type == 'phq9':
             self.data_pipeline = create_screentime_phq9_pipeline(
                 time_windows=self.time_windows,
                 fill_method=self.fill_method,

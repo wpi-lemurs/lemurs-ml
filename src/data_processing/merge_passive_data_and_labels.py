@@ -933,7 +933,174 @@ def main():
     print("  python src/modeling/model_screentime_time_windows.py")
     print("="*80)
 
-if __name__ == '__main__':
-    main()
+def merge_subwindow_screentime_features_with_risk_labels(
+    screentime_app_df=None,
+    risk_labels_df=None,
+    label_column='suicide_risk_label',
+    lookback_hours=12,
+    subwindow_hours=3,
+    app_user_id=-1
+):
+    """
+    Merge sub-window screentime category features with risk labels from surveys.
+
+    This function creates features from app category usage patterns in sub-windows
+    within a larger lookback window. For example, with lookback_hours=12 and
+    subwindow_hours=3, it creates 4 sub-windows and calculates features for each:
+    - Sub-window 0: hours 0-2 before survey
+    - Sub-window 1: hours 3-5 before survey
+    - Sub-window 2: hours 6-8 before survey
+    - Sub-window 3: hours 9-11 before survey
+
+    For each sub-window, calculates:
+    - most_used_category_sw{N}: Most used app category
+    - most_used_category_time_sw{N}: Time spent in that category (minutes)
+    - num_apps_sw{N}: Number of unique apps used
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame, optional
+        DataFrame with categorized screentime app data (from screentime_app_categorized.csv)
+        If None, loads from default location
+    risk_labels_df : DataFrame, optional
+        DataFrame with risk labels including 'app_user_id', 'timestamp', and label_column
+        If None, uses daily_labels_data
+    label_column : str, default='suicide_risk_label'
+        Name of the risk label column to merge
+        Options: 'suicide_risk_label', 'self_harm_risk_label', 'sleep_label'
+    lookback_hours : int, default=12
+        Total hours to look back from survey
+    subwindow_hours : int, default=3
+        Size of each sub-window in hours
+    app_user_id : int, default=-1
+        Filter to specific user ID, or -1 for all users
+
+    Returns:
+    --------
+    DataFrame with columns:
+        - app_user_id
+        - survey_response_id
+        - timestamp (survey timestamp)
+        - most_used_category_sw{N} for each sub-window
+        - most_used_category_time_sw{N} for each sub-window
+        - num_apps_sw{N} for each sub-window
+        - {label_column} (e.g., 'suicide_risk_label')
+    """
+    from src.data_processing.screentime_feature_engineering import (
+        load_and_clean_screentime_data,
+        calculate_subwindow_features
+    )
+
+    print("="*80)
+    print(f"MERGING SUB-WINDOW SCREENTIME FEATURES WITH {label_column.upper()}")
+    print(f"  Lookback: {lookback_hours}h, Sub-window: {subwindow_hours}h")
+    print("="*80)
+
+    # Load screentime app data if not provided
+    if screentime_app_df is None:
+        screentime_app_df = load_and_clean_screentime_data()
+
+    # Filter by user if specified
+    if app_user_id != -1:
+        screentime_app_df = screentime_app_df[screentime_app_df['app_user_id'] == app_user_id]
+
+    # Get risk labels if not provided
+    if risk_labels_df is None:
+        risk_labels_df = daily_labels_data
+
+    # Filter risk labels by user if specified
+    if app_user_id != -1:
+        risk_labels_df = risk_labels_df[risk_labels_df['app_user_id'] == app_user_id]
+
+    # Ensure timestamp column is datetime
+    risk_labels_df = risk_labels_df.copy()
+    risk_labels_df['timestamp'] = pd.to_datetime(risk_labels_df['timestamp'])
+
+    # Filter to only rows with the label column
+    risk_labels_df = risk_labels_df[risk_labels_df[label_column].notna()]
+
+    print(f"Processing {len(risk_labels_df)} survey responses with {label_column}...")
+
+    # Calculate features for each survey
+    all_features = []
+    num_subwindows = lookback_hours // subwindow_hours
+
+    for idx, survey_row in risk_labels_df.iterrows():
+        user_id = survey_row['app_user_id']
+        survey_time = survey_row['timestamp']
+        survey_id = survey_row.get('survey_response_id', idx)
+
+        # Calculate sub-window features
+        features = calculate_subwindow_features(
+            screentime_app_df,
+            reference_time=survey_time,
+            lookback_hours=lookback_hours,
+            subwindow_hours=subwindow_hours,
+            user_id=user_id
+        )
+
+        # Add metadata and label
+        features['app_user_id'] = user_id
+        features['survey_response_id'] = survey_id
+        features['timestamp'] = survey_time
+        features[label_column] = survey_row[label_column]
+
+        all_features.append(features)
+
+    # Convert to DataFrame
+    result_df = pd.DataFrame(all_features)
+
+    print(f"\nGenerated {len(result_df)} rows with sub-window features")
+    print(f"Columns: {list(result_df.columns)}")
+    print(f"\nLabel distribution:")
+    print(result_df[label_column].value_counts())
+
+    return result_df
 
 
+def merge_subwindow_screentime_features_with_phq9(
+    screentime_app_df=None,
+    phq9_df=None,
+    lookback_hours=12,
+    subwindow_hours=3,
+    app_user_id=-1
+):
+    """
+    Merge sub-window screentime category features with PHQ-9 depression labels.
+
+    Convenience function that wraps merge_subwindow_screentime_features_with_risk_labels
+    for PHQ-9 data.
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame, optional
+        Categorized screentime app data
+    phq9_df : DataFrame, optional
+        PHQ-9 data with 'severity_label'
+    lookback_hours : int, default=12
+        Total hours to look back
+    subwindow_hours : int, default=3
+        Size of each sub-window
+    app_user_id : int, default=-1
+        Filter to specific user or -1 for all
+
+    Returns:
+    --------
+    DataFrame with sub-window features and severity_label
+    """
+    if phq9_df is None:
+        phq9_df = phq9_data
+
+    # PHQ-9 has different column names, need to rename for compatibility
+    phq9_copy = phq9_df.copy()
+    if 'survey_response_id' not in phq9_copy.columns and 'phq9_response_id' in phq9_copy.columns:
+        phq9_copy['survey_response_id'] = phq9_copy['phq9_response_id']
+
+    return merge_subwindow_screentime_features_with_risk_labels(
+        screentime_app_df=screentime_app_df,
+        risk_labels_df=phq9_copy,
+        label_column='severity_label',
+        lookback_hours=lookback_hours,
+        subwindow_hours=subwindow_hours,
+        app_user_id=app_user_id
+    )
