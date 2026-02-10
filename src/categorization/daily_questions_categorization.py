@@ -340,8 +340,13 @@ def get_daily_labels_dataframe():
         lambda t: emotion_regulation_label(t) if not pd.isna(t) else None
     )
 
+    CUTOFF_HOUR = 14  # morning survey closes at 13, afternoon opens at 15; we only need a sleep label for morning, as no sleep data is recorded in the afternoon
     df["sleep_label"] = df.apply(
-        lambda r: sleep_label(r.get("sleep_hours"), r.get("sleep_quality")), axis=1
+        lambda r: (
+            'N/A' if r.get("timestamp").hour >= CUTOFF_HOUR
+            else sleep_label(r.get("sleep_hours"), r.get("sleep_quality"))
+        ),
+        axis=1
     )
 
     return df
