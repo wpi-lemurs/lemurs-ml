@@ -79,7 +79,7 @@ class DatabaseService:
                 user=self.user,
                 password=self.password
             )
-            logger.info(f"Successfully connected to PostgreSQL database at {self.host}:{self.port}/{self.dbname}")
+            # logger.info(f"Successfully connected to PostgreSQL database at {self.host}:{self.port}/{self.dbname}")
             return True
         except psycopg2.Error as e:
             logger.error(f"Error connecting to PostgreSQL database: {e}")
@@ -89,7 +89,7 @@ class DatabaseService:
         """Disconnect from database"""
         if self.connection:
             self.connection.close()
-            logger.info("Disconnected from PostgreSQL database")
+            # logger.info("Disconnected from PostgreSQL database")
 
     def get_audio_records(self, table_name: str = "audio_response",
                          limit: Optional[int] = None) -> List[Dict]:
@@ -192,7 +192,7 @@ class DatabaseService:
                            """
 
             df = pd.read_sql(query, self.connection)
-            logger.info(f"Retrieved {len(df)} records from {table_name}")
+            # logger.info(f"Retrieved {len(df)} records from {table_name}")
             return df
 
         except Exception as e:
