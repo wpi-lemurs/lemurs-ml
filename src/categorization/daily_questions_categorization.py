@@ -113,7 +113,7 @@ def sleep_label(duration_hours, quality):
     # duration_hours may be None
     if duration_hours is None and quality is None:
         return None
-    if duration_hours is not None and (duration_hours <= 5 or duration_hours >= 10):
+    if duration_hours is not None and (duration_hours <= 5 or duration_hours >= 11):
         return "at_risk"
     if quality is not None and quality <= 2:
         return "at_risk"
