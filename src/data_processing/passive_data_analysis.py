@@ -595,7 +595,7 @@ def hourly_health_data(steps_df=steps_data, speed_df=speed_data, distance_df=dis
 
     return result
 
-def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
+def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time', week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None, use_accurate_method=False):
     """
     Calculate the hourly total screentime for each user
     :param screentime_df: DataFrame with screentime data
@@ -608,6 +608,8 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
         - 'ffill_bfill': apply forward fill then backward fill
         - 'zero': replace NaN with 0
     :param date_range: tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+    :param use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+                                if False (default), uses the original method based on screentime table.
     :return: pandas df with columns ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
       'hourly_screentime']
       Each row represents one user's hourly screentime with the associated day and week.
@@ -615,14 +617,55 @@ def hourly_screentime_data(screentime_df=screentime_data, start_col='start_time'
       day where a user has data, 1 for the second, etc.
     """
 
-    # Process screentime using the shared helper function
-    hourly_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
+    if use_accurate_method:
+        # Use the accurate method based on screentime_app table
+        accurate_df = calculate_accurate_screentime_from_app_table(screentime_app_df=None, screentime_df=screentime_df)
+
+        if accurate_df.empty:
+            return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+                                        'hourly_screentime'])
+
+        # Convert to hourly aggregated format
+        df = accurate_df.copy()
+
+        # Filter by user if specified
+        if app_user_id != -1:
+            df = df[df['app_user_id'] == app_user_id]
+
+        # Filter by date range if specified
+        if date_range is not None:
+            start_date, end_date = date_range
+            start_date = pd.to_datetime(start_date)
+            end_date = pd.to_datetime(end_date)
+            df = df[(df['calculated_start_time'] >= start_date) & (df['calculated_start_time'] <= end_date)]
+
+        # Create hourly bins based on calculated_start_time
+        df['datetime'] = df['calculated_start_time'].dt.floor('h')
+
+        # Aggregate by user and hour
+        hourly_screentime = df.groupby(['app_user_id', 'datetime']).agg({
+            'total_time_seconds': 'sum'
+        }).reset_index()
+
+        hourly_screentime = hourly_screentime.rename(columns={'total_time_seconds': 'hourly_screentime'})
+
+    else:
+        # Use the original method
+        # Process screentime using the shared helper function
+        hourly_screentime = _process_passive_data_dataframe(screentime_df, 'sum', 'H', start_col, app_user_id=app_user_id, date_range=date_range)
 
     # Prepare dataframes for merging - rename time_key to datetime
     dataframes_with_names = []
-    if hourly_screentime is not None:
-        hourly_screentime = hourly_screentime.rename(columns={'time_key': 'datetime'})
+    if hourly_screentime is not None and not hourly_screentime.empty:
+        # Only rename if time_key exists (original method)
+        if 'time_key' in hourly_screentime.columns:
+            hourly_screentime = hourly_screentime.rename(columns={'time_key': 'datetime'})
         dataframes_with_names.append((hourly_screentime, 'hourly_screentime'))
+
+    # If no data, return empty DataFrame
+    if not dataframes_with_names:
+        return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index',
+                                    'hourly_screentime'])
 
     # Determine if we have app_user_id
     has_app_user_id = hourly_screentime is not None and 'app_user_id' in hourly_screentime.columns
