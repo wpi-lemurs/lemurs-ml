@@ -25,11 +25,70 @@ if 'start_time' in screentime_data.columns and 'end_time' in screentime_data.col
         pd.to_datetime(screentime_data['start_time'])
     ).dt.total_seconds()
 
-# Remove duplicate rows
-# unique_steps = steps_data.drop_duplicates(subset='start_timestamp')
-# unique_speed_data = speed_data.drop_duplicates(subset='start_timestamp')
-# unique_distance_data = distance_data.drop_duplicates(subset='start_timestamp')
-# unique_calorie_data = calorie_data.drop_duplicates(subset='start_timestamp')
+
+def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screentime_df=None):
+    """
+    Calculate accurate screentime from the screentime_app table by computing actual start times.
+
+    The screentime table has inaccurate start times. This function fixes this by:
+    1. Joining screentime_app with screentime on screentime_id
+    2. Calculating actual start_time = last_time_used - total_time_ms
+    3. Handling duplicates by keeping the most recent last_time_used for each app/screentime_id combination
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame, optional
+        DataFrame with screentime_app data. If None, extracts from database.
+    screentime_df : DataFrame, optional
+        DataFrame with screentime data. If None, extracts from database.
+
+    Returns:
+    --------
+    DataFrame with columns: ['app_user_id', 'app_name', 'calculated_start_time', 'last_time_used', 'total_time_ms', 'total_time_seconds']
+        Each row represents one app usage session with accurate timing.
+    """
+    # Extract data from database if not provided
+    if screentime_app_df is None:
+        service = DatabaseService()
+        screentime_app_df = service.extract_from_database("screentime_app")
+        service.disconnect()
+
+    if screentime_df is None:
+        service = DatabaseService()
+        screentime_df = service.extract_from_database("screentime")
+        service.disconnect()
+
+    # Make copies to avoid modifying originals
+    app_df = screentime_app_df.copy()
+    screen_df = screentime_df[['id', 'app_user_id']].copy()
+    screen_df = screen_df.rename(columns={'id': 'screentime_id'})
+
+    # Join tables to get app_user_id
+    df = app_df.merge(screen_df, on='screentime_id', how='left')
+
+    # Convert timestamps to datetime
+    df['last_time_used'] = pd.to_datetime(df['last_time_used'])
+
+    # Handle duplicates: Keep only the most recent record for each app per screentime_id
+    # Since total_time_ms is cumulative, duplicates with different last_time_used occur when
+    # the same app has the same cumulative time but was recorded at different moments
+    df = df.sort_values(['screentime_id', 'app_name', 'last_time_used'], ascending=[True, True, True])
+    df = df.drop_duplicates(subset=['screentime_id', 'app_name', 'total_time_ms'], keep='last')
+
+    # Calculate actual start time: start_time = last_time_used - total_time_ms
+    df['total_time_seconds'] = df['total_time_ms'] / 1000
+    df['calculated_start_time'] = df['last_time_used'] - pd.to_timedelta(df['total_time_seconds'], unit='s')
+
+    # Select and order columns
+    result = df[['app_user_id', 'app_name', 'calculated_start_time', 'last_time_used', 'total_time_ms', 'total_time_seconds']].copy()
+
+    # Sort by user and start time
+    result = result.sort_values(['app_user_id', 'calculated_start_time']).reset_index(drop=True)
+
+    print(f"Processed {len(result):,} accurate screentime records for {result['app_user_id'].nunique()} users")
+
+    return result
+
 
 def _process_passive_data_dataframe(df, agg_func, time_unit, start_col='start_timestamp', value_col=None, app_user_id=-1, date_range=None):
     """
@@ -410,7 +469,6 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     - pandas.DataFrame with columns ['app_user_id', 'date', 'week_start', 'day_index',
       'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed']
       Each row represents one user's daily health metrics with associated week.
-      day_index is 0 for the first day of each week, 1 for the second, etc.
     """
 
     # Process each health metric using the shared helper function
@@ -710,3 +768,150 @@ def daily_screentime_hourly_features(screentime_df=None, start_col='start_time',
     # Sort by user and date
     pivot_data = pivot_data.sort_values(['app_user_id', 'date']).reset_index(drop=True)
     return pivot_data
+
+def hourly_screentime_from_app_table(screentime_app_df=None, screentime_df=None, week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
+    """
+    Calculate hourly screentime using accurate start times from the screentime_app table.
+
+    This function aggregates screentime by hour for each user, using the calculated start times
+    from calculate_accurate_screentime_from_app_table().
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame, optional
+        DataFrame with screentime_app data. If None, extracts from database.
+    screentime_df : DataFrame, optional
+        DataFrame with screentime data. If None, extracts from database.
+    week_anchor : str, default 'MON'
+        Weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
+    app_user_id : int, default -1
+        Filter rows to this app_user_id; if -1, include all users
+    fill_method : str, optional
+        Method to fill null values. Options: None, 'interpolate', 'ffill_bfill', 'zero'
+    date_range : tuple, optional
+        Tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+
+    Returns:
+    --------
+    DataFrame with columns: ['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index', 'hourly_screentime']
+        Each row represents one user's hourly screentime with the associated day and week.
+    """
+    # Get accurate screentime data
+    accurate_data = calculate_accurate_screentime_from_app_table(screentime_app_df, screentime_df)
+
+    # Filter by user if specified
+    if app_user_id != -1:
+        accurate_data = accurate_data[accurate_data['app_user_id'] == app_user_id]
+
+    # Filter by date range if specified
+    if date_range is not None:
+        if len(date_range) != 2:
+            raise ValueError("date_range must be a tuple of (start_date, end_date)")
+        start_date, end_date = date_range
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+        accurate_data = accurate_data[
+            (accurate_data['calculated_start_time'] >= start_date) &
+            (accurate_data['calculated_start_time'] <= end_date)
+        ]
+
+    if accurate_data.empty:
+        return pd.DataFrame(columns=['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index', 'hourly_screentime'])
+
+    # Floor to hour
+    accurate_data['hour_floor'] = accurate_data['calculated_start_time'].dt.floor('h')
+
+    # Aggregate by user and hour
+    hourly_agg = accurate_data.groupby(['app_user_id', 'hour_floor'])['total_time_seconds'].sum().reset_index()
+    hourly_agg = hourly_agg.rename(columns={'hour_floor': 'datetime', 'total_time_seconds': 'hourly_screentime'})
+
+    # Extract date from datetime and add week metadata
+    hourly_agg['date'] = hourly_agg['datetime'].dt.date
+    hourly_agg['date'] = pd.to_datetime(hourly_agg['date'])
+    hourly_agg = _add_week_metadata(hourly_agg, 'date', week_anchor)
+
+    # Add hour index
+    hourly_agg = _add_hour_index(hourly_agg, 'datetime', 'date')
+
+    # Reorder columns
+    hourly_agg = hourly_agg[['app_user_id', 'datetime', 'date', 'week_start', 'day_index', 'hour_index', 'hourly_screentime']]
+
+    # Sort by user and datetime
+    hourly_agg = hourly_agg.sort_values(['app_user_id', 'datetime']).reset_index(drop=True)
+
+    # Apply fill method if requested
+    if fill_method:
+        hourly_agg = _apply_fill_method(hourly_agg, ['hourly_screentime'], fill_method, has_app_user_id=True)
+
+    return hourly_agg
+
+
+def daily_screentime_from_app_table(screentime_app_df=None, screentime_df=None, week_anchor='MON', app_user_id=-1, fill_method=None, date_range=None):
+    """
+    Calculate daily screentime using accurate start times from the screentime_app table.
+
+    Parameters:
+    -----------
+    screentime_app_df : DataFrame, optional
+        DataFrame with screentime_app data. If None, extracts from database.
+    screentime_df : DataFrame, optional
+        DataFrame with screentime data. If None, extracts from database.
+    week_anchor : str, default 'MON'
+        Weekday anchor for weekly grouping (e.g. 'MON', 'SUN')
+    app_user_id : int, default -1
+        Filter rows to this app_user_id; if -1, include all users
+    fill_method : str, optional
+        Method to fill null values. Options: None, 'interpolate', 'ffill_bfill', 'zero'
+    date_range : tuple, optional
+        Tuple of (start_date, end_date) to filter data. Example: ('2025-01-01', '2025-12-31')
+
+    Returns:
+    --------
+    DataFrame with columns: ['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime']
+        Each row represents one user's daily screentime with the associated week.
+    """
+    # Get accurate screentime data
+    accurate_data = calculate_accurate_screentime_from_app_table(screentime_app_df, screentime_df)
+
+    # Filter by user if specified
+    if app_user_id != -1:
+        accurate_data = accurate_data[accurate_data['app_user_id'] == app_user_id]
+
+    # Filter by date range if specified
+    if date_range is not None:
+        if len(date_range) != 2:
+            raise ValueError("date_range must be a tuple of (start_date, end_date)")
+        start_date, end_date = date_range
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+        accurate_data = accurate_data[
+            (accurate_data['calculated_start_time'] >= start_date) &
+            (accurate_data['calculated_start_time'] <= end_date)
+        ]
+
+    if accurate_data.empty:
+        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime'])
+
+    # Extract date
+    accurate_data['date'] = accurate_data['calculated_start_time'].dt.date
+    accurate_data['date'] = pd.to_datetime(accurate_data['date'])
+
+    # Aggregate by user and date
+    daily_agg = accurate_data.groupby(['app_user_id', 'date'])['total_time_seconds'].sum().reset_index()
+    daily_agg = daily_agg.rename(columns={'total_time_seconds': 'daily_screentime'})
+
+    # Add week metadata
+    daily_agg = _add_week_metadata(daily_agg, 'date', week_anchor)
+
+    # Reorder columns
+    daily_agg = daily_agg[['app_user_id', 'date', 'week_start', 'day_index', 'daily_screentime']]
+
+    # Sort by user and date
+    daily_agg = daily_agg.sort_values(['app_user_id', 'date']).reset_index(drop=True)
+
+    # Apply fill method if requested
+    if fill_method:
+        daily_agg = _apply_fill_method(daily_agg, ['daily_screentime'], fill_method, has_app_user_id=True)
+
+    return daily_agg
+
