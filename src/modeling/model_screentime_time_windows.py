@@ -268,6 +268,33 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'target_type': target_type
         }
 
+        # Train baseline model using previous survey label
+
+        baseline_df = data.sort_values(['app_user_id', 'survey_timestamp'])
+
+        # get label for each user's previous survey
+        baseline_df['baseline_pred'] = baseline_df.groupby('app_user_id')[label_col].shift(1)
+        # remove first survey (no data before it to use)
+        baseline_df = baseline_df.dropna(subset=['baseline_pred'])
+
+        # ONLY evaluate on X_test set
+        test_indices = X_test.index
+        baseline_df = baseline_df[baseline_df.index.isin(test_indices)]
+
+        baseline_true = baseline_df[label_col].values
+        baseline_pred = baseline_df['baseline_pred'].values
+        baseline_acc = accuracy_score(baseline_true, baseline_pred)
+
+        # Generate confusion matrix with explicit label order
+        baseline_cm = confusion_matrix(baseline_true, baseline_pred, labels=label_order)
+        results['baseline_confusion_matrix'] = baseline_cm.tolist()
+        results['baseline_accuracy'] = baseline_acc
+
+        try:
+            results['baseline_f1_score'] = f1_score(baseline_true, baseline_pred, pos_label=positive_class, average='binary')
+        except Exception:
+            results['baseline_f1_score'] = None
+
         # Train Logistic Regression
         lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
         lr_model.fit(X_train, y_train)
@@ -337,7 +364,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Create figure with subplots for each time window
     n_windows = len(all_results)
-    fig, axes = plt.subplots(n_windows, 2, figsize=(14, 5 * n_windows))
+    fig, axes = plt.subplots(n_windows, 3, figsize=(14, 5 * n_windows))
 
     # Handle case of single time window
     if n_windows == 1:
@@ -378,6 +405,20 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             axes[idx, 1].set_title(title)
             axes[idx, 1].set_ylabel('True Label')
             axes[idx, 1].set_xlabel('Predicted Label')
+        
+        # Plot Baseline confusion matrix
+        if 'baseline_confusion_matrix' in result:
+            baseline_cm = np.array(result['baseline_confusion_matrix'])
+            sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 2], cbar=True)
+            # Build title with F1 score if available
+            title = f'Baseline - {time_window}h window\nAccuracy: {result["baseline_accuracy"]:.3f}'
+            if 'baseline_f1_score' in result and result['baseline_f1_score'] is not None:
+                title += f' | F1: {result["baseline_f1_score"]:.3f}'
+            axes[idx, 2].set_title(title)
+            axes[idx, 2].set_ylabel('True Label')
+            axes[idx, 2].set_xlabel('Predicted Label')
 
     plt.tight_layout()
 
@@ -392,8 +433,9 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         # Find best performing window by accuracy
         best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_accuracy'])
         best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_accuracy'])
+        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_accuracy'])
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig, axes = plt.subplots(1, 3, figsize=(14, 5))
         fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
                      fontsize=16, fontweight='bold')
 
@@ -424,6 +466,20 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         axes[1].set_title(title, fontsize=12, fontweight='bold')
         axes[1].set_ylabel('True Label', fontsize=11)
         axes[1].set_xlabel('Predicted Label', fontsize=11)
+
+        # Best Baseline
+        best_baseline = all_results[best_rf_idx]
+        baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
+        sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
+                   xticklabels=labels, yticklabels=labels,
+                   ax=axes[2], cbar=True, annot_kws={'size': 14})
+        # Build title with F1 score if available
+        title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
+        if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
+            title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
+        axes[2].set_title(title, fontsize=12, fontweight='bold')
+        axes[2].set_ylabel('True Label', fontsize=11)
+        axes[2].set_xlabel('Predicted Label', fontsize=11)
 
         plt.tight_layout()
 
@@ -517,9 +573,9 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
 
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
-        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy']
+        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy', 'baseline_accuracy']
         if 'lr_f1_score' in comparison_df.columns:
-            display_cols.extend(['lr_f1_score', 'rf_f1_score'])
+            display_cols.extend(['lr_f1_score', 'rf_f1_score', 'baseline_f1_score'])
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
@@ -539,6 +595,10 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"  Best window: {best_rf_window['time_window']}h")
             print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
+
+            print(f"\nBaseline Model:")
+            print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
+            print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
         else:
             best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
             best_rf_window = comparison_df.loc[comparison_df['rf_accuracy'].idxmax()]
@@ -554,6 +614,9 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"  Best window: {best_rf_window['time_window']}h")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
 
+            print(f"\nBaseline Model:")
+            print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
+
 
         # Generate confusion matrix visualizations
         plot_confusion_matrices(all_results, target_type=target_type, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
@@ -564,6 +627,121 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     print("Analysis complete!")
     print("="*80)
 
+def actual_previous_score_baseline(labeled_df, label_col, target_type):
+    '''
+    Compute previous-response baseline: predict each survey's label as the user's previous survey label.
+
+    Parameters:
+    - labeled_df: DataFrame with 'app_user_id', 'survey_timestamp', and risk label columns
+
+    Produces a confusion matrix PNG in `data_dir` and prints accuracy / F1 to stdout.
+    '''
+    df = labeled_df.copy()
+    print(df.head())
+
+    # print index 29
+    print("Index 29:")
+    print(df[df['index'] == 29])
+
+    # drop n/a sleep_label rows with afternoon data
+    if target_type == 'sleep':
+        # keep indices
+        df = df[df['sleep_label'] != 'N/A']
+
+    print(df.head())
+
+    # print index 29
+    print("Index 29:")
+    print(df.iloc[29])
+
+    # ensure datetime and sort by user/time
+    df['survey_timestamp'] = pd.to_datetime(df['survey_timestamp'])
+    df = df.sort_values(['app_user_id', 'survey_timestamp'])
+
+    # print index 29
+    print("Index 29:")
+    print(df.iloc[29])
+
+    # get label for each user's previous survey
+    # keep indices
+    df['baseline_pred'] = df.groupby('app_user_id')[label_col].shift(1)
+    # remove first survey (no data before it to use)
+    # keep indices
+    eval_df = df.dropna(subset=['baseline_pred'])
+    print('Printing head')
+
+    # print index 29
+    print("Index 29:")
+    print(df.iloc[29])
+
+
+    # only use users with index in X_test_sleep_4h.csv
+    test_indices = pd.read_csv(data_dir / f'X_test_{target_type}_4h.csv', index_col=0).index
+    eval_df = eval_df[eval_df.index.isin(test_indices)]
+
+    # print index 29
+    print("Index 29:")
+    print(df.iloc[29])
+
+    print(eval_df.describe())
+
+    y_true = eval_df[label_col].values
+    y_pred = eval_df['baseline_pred'].values
+
+    acc = accuracy_score(y_true, y_pred)
+    try:
+        f1 = f1_score(y_true, y_pred, average='binary', pos_label='depressed' if target_type == 'phq9' else 'at_risk')
+    except Exception:
+        f1 = None
+
+    # standard label order for confusion matrix
+    if target_type == 'phq9':
+        label_order = ['not_depressed', 'depressed']
+    else:
+        label_order = ['not_at_risk', 'at_risk']
+
+    cm = confusion_matrix(y_true, y_pred, labels=label_order)
+
+    # Print metrics
+    print("\nPrevious-response baseline evaluation")
+    print(f"  Accuracy: {acc:.4f}")
+    if f1 is not None:
+        print(f"  F1: {f1:.4f}")
+    else:
+        print("  F1: n/a")
+
+    # Plot and save confusion matrix
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=label_order, yticklabels=label_order, ax=ax)
+    ax.set_ylabel('True Label')
+    ax.set_xlabel('Predicted Label')
+    ax.set_title(f'Previous-Response Baseline - {target_type.replace("_", " ").title()}')
+
+    out_name = f'baseline_prev_response_confusion_{target_type}.png'
+    out_path = data_dir / out_name
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    '''  sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 1], cbar=True)
+            # Build title with F1 score if available
+            title = f'Random Forest - {time_window}h window\nAccuracy: {result["rf_accuracy"]:.3f}'
+            if 'rf_f1_score' in result and result['rf_f1_score'] is not None:
+                title += f' | F1: {result["rf_f1_score"]:.3f}'
+            axes[idx, 1].set_title(title)
+            axes[idx, 1].set_ylabel('True Label')
+            axes[idx, 1].set_xlabel('Predicted Label')
+    '''
+
+    print(f"Saved confusion matrix to: {out_path}")
+
+    return {
+        'accuracy': acc,
+        'f1': f1,
+        'confusion_matrix': cm.tolist()
+    }
 
 
 if __name__ == '__main__':
@@ -597,6 +775,47 @@ if __name__ == '__main__':
     if '--loocv' in sys.argv or '-l' in sys.argv:
         use_loocv = True
         print("Leave-One-Out Cross-Validation enabled")
+
+    # Run previous-response baseline if requested
+    if '--baseline' in sys.argv or '-B' in sys.argv:
+        # Determine merge function and label column same as main()
+        if target_type == 'phq9':
+            screentime_data = merge_daily_screentime_features_with_phq9(
+                screentime_df=None,
+                fill_method='zero',
+                hours_before_survey=24,
+                app_user_id=-1
+            )
+            actual_previous_score_baseline(screentime_data, label_col='severity_label', target_type=target_type)
+        else:
+            # risk labels (suicide/self_harm/sleep)
+            if target_type == 'suicide_risk':
+                label_col = 'suicide_risk_label'
+                positive_class = 'at_risk'
+                output_prefix = 'daily_screentime_suicide_risk'
+                prediction_task = 'Suicide Risk'
+            elif target_type == 'self_harm':
+                label_col = 'self_harm_risk_label'
+                positive_class = 'at_risk'
+                output_prefix = 'daily_screentime_self_harm'
+                prediction_task = 'Self-Harm Risk'
+            elif target_type == 'sleep':
+                label_col = 'sleep_label'
+                positive_class = 'at_risk'
+                output_prefix = 'daily_screentime_sleep'
+                prediction_task = 'Sleep Risk'
+            screentime_data = merge_daily_screentime_features_with_risk_labels(
+                screentime_df=None,
+                risk_labels_df=None,
+                label_column=label_col,
+                fill_method='zero',
+                hours_before_survey=24,
+                app_user_id=-1
+            )
+            actual_previous_score_baseline(screentime_data, label_col=label_col, target_type=target_type)
+
+        # Exit after baseline run
+        sys.exit(0)
 
     # Run main with parsed arguments
     main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
