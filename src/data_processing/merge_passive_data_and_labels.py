@@ -399,7 +399,7 @@ def merge_hourly_health_with_risk_labels(hourly_health_df=None, risk_labels_df=N
 
 def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_data,
                                       week_anchor='MON', fill_method=None,
-                                      app_user_id=-1, date_range=None):
+                                      app_user_id=-1, date_range=None, use_accurate_method=False):
     """
     Merge hourly screentime data with PHQ-9 depression labels.
 
@@ -415,6 +415,8 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
+    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+                          if False (default), uses the original method based on screentime table.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated PHQ-9 labels
@@ -423,7 +425,8 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
     if hourly_screentime_df is None:
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
-                                                      app_user_id=app_user_id, date_range=date_range)
+                                                      app_user_id=app_user_id, date_range=date_range,
+                                                      use_accurate_method=use_accurate_method)
 
     if hourly_screentime_df.empty:
         print("Warning: No hourly screentime data available")
@@ -452,7 +455,7 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
 def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_labels_df=None,
                                              label_column='suicide_risk_label',
                                              week_anchor='MON', fill_method=None,
-                                             app_user_id=-1, date_range=None):
+                                             app_user_id=-1, date_range=None, use_accurate_method=False):
     """
     Merge hourly screentime data with risk labels (suicide, self-harm, or sleep).
 
@@ -471,6 +474,8 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
+    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+                          if False (default), uses the original method based on screentime table.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated risk labels
@@ -479,7 +484,8 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
     if hourly_screentime_df is None:
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
-                                                      app_user_id=app_user_id, date_range=date_range)
+                                                      app_user_id=app_user_id, date_range=date_range,
+                                                      use_accurate_method=use_accurate_method)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:
@@ -493,7 +499,8 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
 
 def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_data,
                                               fill_method='zero', hours_before_survey=24,
-                                              week_anchor='MON', app_user_id=-1, date_range=None):
+                                              week_anchor='MON', app_user_id=-1, date_range=None,
+                                              use_accurate_method=False):
     """
     Merge daily screentime data (with hourly features) with PHQ-9 depression labels.
     For each PHQ-9 survey, this function looks back n hours and creates features from the hourly screentime
@@ -511,6 +518,8 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
+    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+                          if False (default), uses the original method based on screentime table.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'phq9_response_id', 'survey_timestamp',
@@ -524,9 +533,10 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     if screentime_df is None:
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor=week_anchor,
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range)
+                                             date_range=date_range, use_accurate_method=use_accurate_method)
     else:
-        hourly_data = hourly_screentime_data(screentime_df, 'start_time', week_anchor, app_user_id, fill_method, date_range)
+        hourly_data = hourly_screentime_data(screentime_df, 'start_time', week_anchor, app_user_id,
+                                            fill_method, date_range, use_accurate_method)
 
     if hourly_data.empty:
         print("Warning: No screentime data available")
@@ -740,7 +750,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
 def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_labels_df=None,
                                                      label_column='suicide_risk_label',
                                                      fill_method='zero', hours_before_survey=24,
-                                                     app_user_id=-1, date_range=None):
+                                                     app_user_id=-1, date_range=None,
+                                                     use_accurate_method=False):
     """
     Merge daily screentime data (with hourly features) with risk labels from surveys.
     For each survey, this function looks back n hours and creates features from the hourly screentime
@@ -760,6 +771,8 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
                           This allows experimenting with different time windows (e.g., 3, 6, 9, 12, 24 hours)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
+    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+                          if False (default), uses the original method based on screentime table.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -774,9 +787,10 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
         # Use default screentime_data from passive_data_analysis
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor='MON',
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range)
+                                             date_range=date_range, use_accurate_method=use_accurate_method)
     else:
-        hourly_data = hourly_screentime_data(screentime_df, 'start_time', 'MON', app_user_id, fill_method, date_range)
+        hourly_data = hourly_screentime_data(screentime_df, 'start_time', 'MON', app_user_id,
+                                            fill_method, date_range, use_accurate_method)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:
@@ -821,117 +835,6 @@ def export_as_csv(df, output_name='modeling_data_steps_phq9.csv'):
     output_path = data_dir / output_name
     df.to_csv(output_path, index=False)
     print(f"Modeling data saved to: {output_path}")
-
-
-
-def main():
-    # Create the combined dataset for modeling - weekly aggregated data
-    print("Creating weekly aggregated health data with PHQ-9 labels...")
-    weekly_modeling_data = merge_weekly_health_with_phq9()
-    print(weekly_modeling_data.head(10))
-    export_as_csv(weekly_modeling_data, 'weekly_health_and_phq9_data.csv')
-
-    # Create daily aggregated health data with PHQ-9 labels
-    print("\nCreating daily aggregated health data with PHQ-9 labels...")
-    daily_modeling_data = merge_daily_health_with_phq9(fill_method=None)
-    print(daily_modeling_data.head(10))
-    export_as_csv(daily_modeling_data, 'daily_health_and_phq9_data.csv')
-
-    # Create hourly aggregated health data with PHQ-9 labels
-    print("\nCreating hourly aggregated health data with PHQ-9 labels...")
-    hourly_modeling_data = merge_hourly_health_with_phq9(fill_method=None)
-    print(hourly_modeling_data.head(10))
-    export_as_csv(hourly_modeling_data, 'hourly_health_and_phq9_data.csv')
-
-    # Create hourly aggregated health data with suicide risk labels
-    print("\nCreating hourly aggregated health data with suicide risk labels...")
-    hourly_suicide_risk_data = merge_hourly_health_with_risk_labels(fill_method=None, label_column='suicide_risk_label')
-    print(hourly_suicide_risk_data.head(10))
-    print(f"\nTotal rows with suicide risk labels: {len(hourly_suicide_risk_data)}")
-    if not hourly_suicide_risk_data.empty:
-        print(f"Label distribution:\n{hourly_suicide_risk_data['suicide_risk_label'].value_counts()}")
-        export_as_csv(hourly_suicide_risk_data, 'hourly_health_and_suicide_risk_data.csv')
-
-    # Create hourly aggregated health data with self-harm risk labels
-    print("\nCreating hourly aggregated health data with self-harm risk labels...")
-    hourly_selfharm_risk_data = merge_hourly_health_with_risk_labels(fill_method=None, label_column='self_harm_risk_label')
-    print(hourly_selfharm_risk_data.head(10))
-    print(f"\nTotal rows with self-harm risk labels: {len(hourly_selfharm_risk_data)}")
-    if not hourly_selfharm_risk_data.empty:
-        print(f"Label distribution:\n{hourly_selfharm_risk_data['self_harm_risk_label'].value_counts()}")
-        export_as_csv(hourly_selfharm_risk_data, 'hourly_health_and_selfharm_risk_data.csv')
-
-    # Create hourly aggregated health data with sleep risk labels
-    print("\nCreating hourly aggregated health data with sleep risk labels...")
-    hourly_sleep_risk_data = merge_hourly_health_with_risk_labels(fill_method=None, label_column='sleep_label')
-    # drop afternoon surveys where sleep_label is N/A
-    hourly_sleep_risk_data = hourly_sleep_risk_data[hourly_sleep_risk_data['sleep_label'] != 'N/A']
-    print(hourly_sleep_risk_data.head(10))
-    print(f"\nTotal rows with sleep risk labels: {len(hourly_sleep_risk_data)}")
-    if not hourly_sleep_risk_data.empty:
-        print(f"Label distribution:\n{hourly_sleep_risk_data['sleep_label'].value_counts()}")
-        export_as_csv(hourly_sleep_risk_data, 'hourly_health_and_sleep_risk_data.csv')
-
-    # Create hourly aggregated screentime data with PHQ-9 labels
-    print("\nCreating hourly aggregated screentime data with PHQ-9 labels...")
-    hourly_screentime_phq9_data = merge_hourly_screentime_with_phq9(fill_method=None)
-    print(hourly_screentime_phq9_data.head(10))
-    print(f"\nTotal rows with PHQ-9 labels: {len(hourly_screentime_phq9_data)}")
-    if not hourly_screentime_phq9_data.empty:
-        print(f"Label distribution:\n{hourly_screentime_phq9_data['severity_label'].value_counts()}")
-        export_as_csv(hourly_screentime_phq9_data, 'hourly_screentime_and_phq9_data.csv')
-
-    # Create hourly aggregated screentime data with suicide risk labels
-    print("\nCreating hourly aggregated screentime data with suicide risk labels...")
-    hourly_screentime_suicide_risk_data = merge_hourly_screentime_with_risk_labels(fill_method=None, label_column='suicide_risk_label')
-    print(hourly_screentime_suicide_risk_data.head(10))
-    print(f"\nTotal rows with suicide risk labels: {len(hourly_screentime_suicide_risk_data)}")
-    if not hourly_screentime_suicide_risk_data.empty:
-        print(f"Label distribution:\n{hourly_screentime_suicide_risk_data['suicide_risk_label'].value_counts()}")
-        export_as_csv(hourly_screentime_suicide_risk_data, 'hourly_screentime_and_suicide_risk_data.csv')
-
-    # Create hourly aggregated screentime data with self-harm risk labels
-    print("\nCreating hourly aggregated screentime data with self-harm risk labels...")
-    hourly_screentime_selfharm_risk_data = merge_hourly_screentime_with_risk_labels(fill_method=None, label_column='self_harm_risk_label')
-    print(hourly_screentime_selfharm_risk_data.head(10))
-    print(f"\nTotal rows with self-harm risk labels: {len(hourly_screentime_selfharm_risk_data)}")
-    if not hourly_screentime_selfharm_risk_data.empty:
-        print(f"Label distribution:\n{hourly_screentime_selfharm_risk_data['self_harm_risk_label'].value_counts()}")
-        export_as_csv(hourly_screentime_selfharm_risk_data, 'hourly_screentime_and_selfharm_risk_data.csv')
-
-    # Create hourly aggregated screentime data with sleep risk labels
-    print("\nCreating hourly aggregated screentime data with sleep risk labels...")
-    hourly_screentime_sleep_risk_data = merge_hourly_screentime_with_risk_labels(fill_method=None, label_column='sleep_label')
-    # drop afternoon surveys where sleep_label is N/A
-    hourly_screentime_sleep_risk_data = hourly_screentime_sleep_risk_data[hourly_screentime_sleep_risk_data['sleep_label'] != 'N/A']
-    print(hourly_screentime_sleep_risk_data.head(10))
-    print(f"\nTotal rows with sleep risk labels: {len(hourly_screentime_sleep_risk_data)}")
-    if not hourly_screentime_sleep_risk_data.empty:
-        print(f"Label distribution:\n{hourly_screentime_sleep_risk_data['sleep_label'].value_counts()}")
-        export_as_csv(hourly_screentime_sleep_risk_data, 'hourly_screentime_and_sleep_risk_data.csv')
-
-    # Create daily screentime features (time windows) with PHQ-9 labels
-    print("\n" + "="*80)
-    print("Creating daily screentime features with PHQ-9 labels (time window approach)...")
-    print("="*80)
-
-    time_windows = [3, 6, 9, 12, 24]
-    for hours in time_windows:
-        print(f"\nCreating screentime features for {hours}-hour window before PHQ-9 surveys...")
-        daily_screentime_phq9_data = merge_daily_screentime_features_with_phq9(
-            fill_method='zero',
-            hours_before_survey=hours
-        )
-        print(f"Total rows: {len(daily_screentime_phq9_data)}")
-        if not daily_screentime_phq9_data.empty:
-            print(f"Label distribution:\n{daily_screentime_phq9_data['severity_label'].value_counts()}")
-            export_as_csv(daily_screentime_phq9_data, f'daily_screentime_phq9_{hours}h.csv')
-
-    print("\n" + "="*80)
-    print("Data merge complete!")
-    print("For time window modeling with screentime data, run:")
-    print("  python src/modeling/model_screentime_time_windows.py")
-    print("="*80)
 
 def merge_subwindow_screentime_features_with_risk_labels(
     screentime_app_df=None,

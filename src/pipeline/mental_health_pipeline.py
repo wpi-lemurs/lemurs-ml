@@ -47,7 +47,8 @@ def create_screentime_risk_pipeline(
     fill_method='zero',
     app_user_id=-1,
     date_range=None,
-    propagate_labels=False
+    propagate_labels=False,
+    use_accurate_method=False
 ):
     """
     Create a pipeline for risk prediction using screentime data.
@@ -66,6 +67,8 @@ def create_screentime_risk_pipeline(
         Optional date range filter
     propagate_labels : bool, default=False
         Whether to propagate positive labels
+    use_accurate_method : bool, default=False
+        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
 
     Returns:
     --------
@@ -81,7 +84,8 @@ def create_screentime_risk_pipeline(
         ('merge_features_labels', FeatureLabelMerger(
             target_type=target_type,
             time_windows=time_windows,
-            propagate_labels=propagate_labels
+            propagate_labels=propagate_labels,
+            use_accurate_method=use_accurate_method
         ))
     ]
 
@@ -93,7 +97,8 @@ def create_screentime_phq9_pipeline(
     fill_method='zero',
     app_user_id=-1,
     date_range=None,
-    propagate_labels=False
+    propagate_labels=False,
+    use_accurate_method=False
 ):
     """
     Create a pipeline for PHQ-9 depression prediction using screentime data.
@@ -110,6 +115,8 @@ def create_screentime_phq9_pipeline(
         Optional date range filter
     propagate_labels : bool, default=False
         Whether to propagate positive labels
+    use_accurate_method : bool, default=False
+        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
 
     Returns:
     --------
@@ -122,7 +129,8 @@ def create_screentime_phq9_pipeline(
         ('merge_features_labels', FeatureLabelMerger(
             target_type='phq9',
             time_windows=time_windows,
-            propagate_labels=propagate_labels
+            propagate_labels=propagate_labels,
+            use_accurate_method=use_accurate_method
         ))
     ]
 
@@ -399,7 +407,8 @@ def create_subwindow_pipeline(
     target_type='suicide_risk',
     lookback_hours=12,
     subwindow_hours=3,
-    propagate_labels=False
+    propagate_labels=False,
+    use_accurate_method=False
 ):
     """
     Create a pipeline for mental health prediction using sub-window screentime features.
@@ -421,6 +430,8 @@ def create_subwindow_pipeline(
         Size of each sub-window in hours
     propagate_labels : bool, default=False
         Whether to propagate positive labels
+    use_accurate_method : bool, default=False
+        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
 
     Returns:
     --------
@@ -442,7 +453,8 @@ def create_subwindow_pipeline(
             target_type=target_type,
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
-            propagate_labels=propagate_labels
+            propagate_labels=propagate_labels,
+            use_accurate_method=use_accurate_method
         ))
     ]
 

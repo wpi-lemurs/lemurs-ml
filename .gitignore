@@ -23,3 +23,4 @@ src/data/db_extracted_audio
 data/db_extracted_audio
 src/.ndarry_cache
 src/.sdgx_cache
+src/notebooks

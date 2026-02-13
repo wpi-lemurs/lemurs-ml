@@ -79,6 +79,9 @@ class ScreentimeModelPipeline:
         Random seed for reproducibility
     save_confusion_matrices : bool, default=True
         Whether to save confusion matrix plots
+    use_accurate_method : bool, default=False
+        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
+        If False, uses the original method based on screentime table.
 
     Methods:
     --------
@@ -117,7 +120,8 @@ class ScreentimeModelPipeline:
         subwindow_hours=3,
         test_size=0.3,
         random_state=42,
-        save_confusion_matrices=True
+        save_confusion_matrices=True,
+        use_accurate_method=False
     ):
         self.target_type = target_type
         self.time_windows = time_windows or [3, 6, 9, 12]
@@ -131,6 +135,7 @@ class ScreentimeModelPipeline:
         self.test_size = test_size
         self.random_state = random_state
         self.save_confusion_matrices = save_confusion_matrices
+        self.use_accurate_method = use_accurate_method
 
         # Initialize models
         if models is None:
@@ -144,20 +149,23 @@ class ScreentimeModelPipeline:
                 target_type=self.target_type,
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours,
-                propagate_labels=self.propagate_labels
+                propagate_labels=self.propagate_labels,
+                use_accurate_method=self.use_accurate_method
             )
         elif target_type == 'phq9':
             self.data_pipeline = create_screentime_phq9_pipeline(
                 time_windows=self.time_windows,
                 fill_method=self.fill_method,
-                propagate_labels=self.propagate_labels
+                propagate_labels=self.propagate_labels,
+                use_accurate_method=self.use_accurate_method
             )
         else:
             self.data_pipeline = create_screentime_risk_pipeline(
                 target_type=self.target_type,
                 time_windows=self.time_windows,
                 fill_method=self.fill_method,
-                propagate_labels=self.propagate_labels
+                propagate_labels=self.propagate_labels,
+                use_accurate_method=self.use_accurate_method
             )
 
         # Store results
