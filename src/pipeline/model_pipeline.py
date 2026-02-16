@@ -25,6 +25,7 @@ Example usage:
 
 import numpy as np
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, roc_auc_score
@@ -179,9 +180,10 @@ class ScreentimeModelPipeline:
 
         model_map = {
             'logistic_regression': LogisticRegression(
-                max_iter=5000,
+                max_iter=10000,
                 random_state=self.random_state,
-                class_weight=class_weight
+                class_weight=class_weight,
+                solver='lbfgs'
             ),
             'random_forest': RandomForestClassifier(
                 n_estimators=100,
@@ -423,19 +425,33 @@ class ScreentimeModelPipeline:
 
         model_results = {}
 
+        # Scale features (important for Logistic Regression convergence)
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
         for model_name, model in self.models.items():
+            # Use scaled data for Logistic Regression, original for Random Forest
+            if 'logistic' in model_name.lower():
+                X_train_model = X_train_scaled
+                X_test_model = X_test_scaled
+            else:
+                # Random Forest doesn't need scaling
+                X_train_model = X_train
+                X_test_model = X_test
+
             # Train
-            model.fit(X_train, y_train)
+            model.fit(X_train_model, y_train)
 
             # Predict
-            y_pred = model.predict(X_test)
+            y_pred = model.predict(X_test_model)
 
             # Get probability predictions for AUC if available
             try:
                 if hasattr(model, 'predict_proba'):
-                    y_proba = model.predict_proba(X_test)[:, 1]
+                    y_proba = model.predict_proba(X_test_model)[:, 1]
                 elif hasattr(model, 'decision_function'):
-                    y_proba = model.decision_function(X_test)
+                    y_proba = model.decision_function(X_test_model)
                 else:
                     y_proba = None
             except:
@@ -522,15 +538,24 @@ class ScreentimeModelPipeline:
                     continue
 
                 try:
+                    # Scale features for Logistic Regression
+                    if 'logistic' in model_name.lower():
+                        scaler = StandardScaler()
+                        X_train_model = scaler.fit_transform(X_train)
+                        X_test_model = scaler.transform(X_test)
+                    else:
+                        X_train_model = X_train
+                        X_test_model = X_test
+
                     # Train and predict
-                    model.fit(X_train, y_train)
-                    y_pred = model.predict(X_test)
+                    model.fit(X_train_model, y_train)
+                    y_pred = model.predict(X_test_model)
 
                     # Get probabilities for AUC if available
                     if hasattr(model, 'predict_proba'):
-                        y_proba = model.predict_proba(X_test)[:, 1]
+                        y_proba = model.predict_proba(X_test_model)[:, 1]
                     elif hasattr(model, 'decision_function'):
-                        y_proba = model.decision_function(X_test)
+                        y_proba = model.decision_function(X_test_model)
                     else:
                         y_proba = None
 
