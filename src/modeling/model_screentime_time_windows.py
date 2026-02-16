@@ -28,6 +28,7 @@ from src.config import DATA_DIR
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
@@ -152,14 +153,19 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
             successful_folds += 1
 
+            # Scale features for Logistic Regression
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+
             # Train models for this fold
             try:
-                # Logistic Regression
-                lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
-                lr_model.fit(X_train, y_train)
-                lr_pred = lr_model.predict(X_test)
+                # Logistic Regression (with scaled data)
+                lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
+                lr_model.fit(X_train_scaled, y_train)
+                lr_pred = lr_model.predict(X_test_scaled)
 
-                # Random Forest
+                # Random Forest (without scaling)
                 rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
@@ -171,7 +177,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
                 # Store probabilities if possible
                 try:
-                    lr_prob = lr_model.predict_proba(X_test)[:, 1]
+                    lr_prob = lr_model.predict_proba(X_test_scaled)[:, 1]
                     all_lr_probs.extend(lr_prob)
                 except:
                     pass
@@ -295,10 +301,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         except Exception:
             results['baseline_f1_score'] = None
 
-        # Train Logistic Regression
-        lr_model = LogisticRegression(max_iter=1000, random_state=42, class_weight=class_weight)
-        lr_model.fit(X_train, y_train)
-        lr_pred = lr_model.predict(X_test)
+        # Scale features for Logistic Regression
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # Train Logistic Regression (with scaled data)
+        lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
+        lr_model.fit(X_train_scaled, y_train)
+        lr_pred = lr_model.predict(X_test_scaled)
         lr_acc = accuracy_score(y_test, lr_pred)
 
         # Generate confusion matrix with explicit label order
