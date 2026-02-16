@@ -31,6 +31,7 @@ from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, roc_auc_
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
 
 from src.pipeline.mental_health_pipeline import (
@@ -217,6 +218,46 @@ class ScreentimeModelPipeline:
                 'output_prefix': f'screentime_{self.target_type}'
             }
 
+    def _print_feature_importance(self, model, feature_names, top_n=20):
+        """
+        Print top N most important features from a tree-based model.
+
+        Parameters:
+        -----------
+        model : trained model with feature_importances_ attribute
+        feature_names : list of feature names
+        top_n : int, number of top features to display (default 20)
+        """
+        if not hasattr(model, 'feature_importances_'):
+            return
+
+        import pandas as pd
+
+        # Get feature importances
+        importances = model.feature_importances_
+
+        # Create DataFrame for easy sorting
+        feature_importance_df = pd.DataFrame({
+            'feature': feature_names,
+            'importance': importances
+        }).sort_values('importance', ascending=False)
+
+        # Filter out features with zero importance
+        feature_importance_df = feature_importance_df[feature_importance_df['importance'] > 0]
+
+        print(f"\n  Top {min(top_n, len(feature_importance_df))} Most Important Features:")
+        print("  " + "-" * 60)
+
+        for idx, row in feature_importance_df.head(top_n).iterrows():
+            importance_pct = row['importance'] * 100
+            print(f"  {row['feature']:45s} {importance_pct:6.2f}%")
+
+        # Print summary statistics
+        print("  " + "-" * 60)
+        total_importance = feature_importance_df.head(top_n)['importance'].sum() * 100
+        print(f"  Total importance of top {min(top_n, len(feature_importance_df))} features: {total_importance:.2f}%")
+        print(f"  Total features: {len(feature_names)}, Non-zero: {len(feature_importance_df)}")
+
     def fit_predict(self):
         """
         Run the complete pipeline: extract data, process, train, and evaluate.
@@ -322,11 +363,16 @@ class ScreentimeModelPipeline:
         # Ensure all features are numeric
         X = data[feature_cols].copy()
 
-        # Convert any remaining non-numeric columns to numeric or drop them
+        # Apply one-hot encoding to categorical columns
         non_numeric_cols = X.select_dtypes(exclude=['number']).columns.tolist()
         if non_numeric_cols:
-            print(f"Warning: Dropping non-numeric columns: {non_numeric_cols}")
-            X = X.select_dtypes(include=['number'])
+            print(f"Applying one-hot encoding to categorical columns: {non_numeric_cols}")
+            # Use pd.get_dummies for one-hot encoding
+            X = pd.get_dummies(X, columns=non_numeric_cols, drop_first=True, dummy_na=False)
+            # Convert boolean columns to int (0/1)
+            bool_cols = X.select_dtypes(include=['bool']).columns
+            X[bool_cols] = X[bool_cols].astype(int)
+            print(f"After encoding: {X.shape[1]} features")
 
         X = X.fillna(0)
         y = data[label_col]
@@ -429,7 +475,9 @@ class ScreentimeModelPipeline:
                 'roc_auc': auc,
                 'confusion_matrix': cm.tolist(),
                 'train_samples': len(X_train),
-                'test_samples': len(X_test)
+                'test_samples': len(X_test),
+                'trained_model': model,
+                'feature_names': X.columns.tolist()
             }
 
             print(f"\n{model_name.replace('_', ' ').title()}:")
@@ -438,6 +486,10 @@ class ScreentimeModelPipeline:
                 print(f"  F1 Score: {f1:.4f}")
             if auc is not None:
                 print(f"  AUC: {auc:.4f}")
+
+            # Print feature importance for Random Forest
+            if model_name == 'random_forest' and hasattr(model, 'feature_importances_'):
+                self._print_feature_importance(model, X.columns.tolist())
 
         return model_results
 
@@ -837,5 +889,4 @@ def run_experiment(
     )
 
     return pipeline.fit_predict()
-
 
