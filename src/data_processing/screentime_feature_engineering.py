@@ -71,21 +71,21 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
     print(f"Records after deduplication: {len(df):,}")
     print(f"Records removed: {original_len - len(df):,}\n")
 
-    # FILTER OUT LAUNCHER APPS
-    # Launcher apps (home screens) don't represent meaningful user activity for ML
-    before_launcher_filter = len(df)
-    launcher_mask = df['app_name'].str.contains('launcher', case=False, na=False)
-    num_launcher_records = launcher_mask.sum()
-    launcher_apps = df[launcher_mask]['app_name'].unique()
+    # FILTER OUT LAUNCHER AND CONTROLLER APPS
+    # Launcher apps (home screens) and controller apps don't represent meaningful user activity for ML
+    before_filter = len(df)
+    filter_mask = df['app_name'].str.contains('launcher|controller', case=False, na=False, regex=True)
+    num_filtered_records = filter_mask.sum()
+    filtered_apps = df[filter_mask]['app_name'].unique()
 
-    df = df[~launcher_mask].copy()
+    df = df[~filter_mask].copy()
 
-    print(f"FILTERING LAUNCHER APPS:")
-    print(f"  Launcher apps found: {len(launcher_apps)}")
-    if len(launcher_apps) > 0:
-        for app in launcher_apps:
+    print(f"FILTERING LAUNCHER/CONTROLLER APPS:")
+    print(f"  Apps found: {len(filtered_apps)}")
+    if len(filtered_apps) > 0:
+        for app in filtered_apps:
             print(f"    - {app}")
-    print(f"  Records removed: {num_launcher_records:,}")
+    print(f"  Records removed: {num_filtered_records:,}")
     print(f"  Records remaining: {len(df):,}\n")
 
     # Convert time to minutes for easier interpretation

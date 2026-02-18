@@ -75,6 +75,12 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
     df = df.sort_values(['screentime_id', 'app_name', 'last_time_used'], ascending=[True, True, True])
     df = df.drop_duplicates(subset=['screentime_id', 'app_name', 'total_time_ms'], keep='last')
 
+    # Filter out launcher and controller apps (don't represent meaningful user activity)
+    before_filter = len(df)
+    filter_mask = df['app_name'].str.contains('launcher|controller', case=False, na=False, regex=True)
+    df = df[~filter_mask].copy()
+    print(f"Filtered out {before_filter - len(df):,} launcher/controller app records")
+
     # Calculate actual start time: start_time = last_time_used - total_time_ms
     df['total_time_seconds'] = df['total_time_ms'] / 1000
     df['calculated_start_time'] = df['last_time_used'] - pd.to_timedelta(df['total_time_seconds'], unit='s')
