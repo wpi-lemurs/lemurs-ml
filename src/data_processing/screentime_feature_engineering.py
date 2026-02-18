@@ -71,6 +71,23 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
     print(f"Records after deduplication: {len(df):,}")
     print(f"Records removed: {original_len - len(df):,}\n")
 
+    # FILTER OUT LAUNCHER APPS
+    # Launcher apps (home screens) don't represent meaningful user activity for ML
+    before_launcher_filter = len(df)
+    launcher_mask = df['app_name'].str.contains('launcher', case=False, na=False)
+    num_launcher_records = launcher_mask.sum()
+    launcher_apps = df[launcher_mask]['app_name'].unique()
+
+    df = df[~launcher_mask].copy()
+
+    print(f"FILTERING LAUNCHER APPS:")
+    print(f"  Launcher apps found: {len(launcher_apps)}")
+    if len(launcher_apps) > 0:
+        for app in launcher_apps:
+            print(f"    - {app}")
+    print(f"  Records removed: {num_launcher_records:,}")
+    print(f"  Records remaining: {len(df):,}\n")
+
     # Convert time to minutes for easier interpretation
     df['total_time_minutes'] = df['total_time_ms'] / (1000 * 60)
 

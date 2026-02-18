@@ -34,6 +34,17 @@ def categorize_system_app(app_name):
     """
     p = app_name.lower()
 
+    # MANUAL OVERRIDES for specific apps that need recategorization
+    manual_categories = {
+        'com.ss.android.ugc.trill': 'SOCIAL',  # TikTok
+        'com.mobile.legends': 'GAME_STRATEGY',  # Mobile Legends
+        'app.revanced.android.youtube': 'VIDEO_PLAYERS',  # YouTube ReVanced
+        'com.rubenmayayo.reddit': 'SOCIAL',  # Reddit client
+    }
+
+    if app_name in manual_categories:
+        return manual_categories[app_name]
+
     # Lemurs app
     if 'lemurs' in p:
         return 'HEALTH_AND_FITNESS'
@@ -92,7 +103,16 @@ def categorize_apps(screentime_app_df):
     # Make a copy to avoid modifying the original
     df = screentime_app_df.copy()
 
-    for app_name in df['app_name'].unique().tolist():
+    unique_apps = df['app_name'].unique().tolist()
+    total_apps = len(unique_apps)
+
+    print(f"Categorizing {total_apps} unique apps...")
+
+    for idx, app_name in enumerate(unique_apps, 1):
+        # Progress indicator every 50 apps
+        if idx % 50 == 0 or idx == total_apps:
+            print(f"  Progress: {idx}/{total_apps} apps ({idx/total_apps*100:.1f}%)")
+
         category = None
 
         # Try Google Play Store first if available
@@ -109,6 +129,7 @@ def categorize_apps(screentime_app_df):
         # update category for all rows with this app_name
         df.loc[df['app_name'] == app_name, 'app_category'] = category
 
+    print(f"✓ Completed categorizing all {total_apps} apps!")
     return df
 
 
@@ -123,9 +144,11 @@ def get_categorized_screentime_data():
     --------
     DataFrame : Categorized screentime app data
     """
+    print("Connecting to database to extract screentime app data...")
     service = DatabaseService()
     screentime_app_data = service.extract_from_database("screentime_app")
     service.disconnect()
+    print(f"✓ Extracted {len(screentime_app_data):,} screentime app records\n")
 
     categorized_df = categorize_apps(screentime_app_data)
     return categorized_df
