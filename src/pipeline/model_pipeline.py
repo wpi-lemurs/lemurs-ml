@@ -220,7 +220,7 @@ class ScreentimeModelPipeline:
                 'output_prefix': f'screentime_{self.target_type}'
             }
 
-    def _print_feature_importance(self, model, feature_names, top_n=20):
+    def _print_feature_importance(self, model, feature_names, top_n=100):
         """
         Print top N most important features from a tree-based model.
 
@@ -245,7 +245,7 @@ class ScreentimeModelPipeline:
         }).sort_values('importance', ascending=False)
 
         # Filter out features with zero importance
-        feature_importance_df = feature_importance_df[feature_importance_df['importance'] > 0]
+        # feature_importance_df = feature_importance_df[feature_importance_df['importance'] > 0]
 
         print(f"\n  Top {min(top_n, len(feature_importance_df))} Most Important Features:")
         print("  " + "-" * 60)

@@ -129,7 +129,7 @@ def categorize_apps(screentime_app_df):
         # update category for all rows with this app_name
         df.loc[df['app_name'] == app_name, 'app_category'] = category
 
-    print(f"✓ Completed categorizing all {total_apps} apps!")
+    print(f"[OK] Completed categorizing all {total_apps} apps!")
     return df
 
 
@@ -148,7 +148,7 @@ def get_categorized_screentime_data():
     service = DatabaseService()
     screentime_app_data = service.extract_from_database("screentime_app")
     service.disconnect()
-    print(f"✓ Extracted {len(screentime_app_data):,} screentime app records\n")
+    print(f"[OK] Extracted {len(screentime_app_data):,} screentime app records\n")
 
     categorized_df = categorize_apps(screentime_app_data)
     return categorized_df
