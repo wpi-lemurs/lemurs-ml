@@ -154,7 +154,8 @@ def run_sweep(
                     target_type=target_type,
                     lookback_hours=lookback,
                     subwindow_hours=subwindow,
-                    propagate_labels=propagate_labels
+                    propagate_labels=propagate_labels,
+                    use_accurate_method=True
                 )
 
                 # Fit the pipeline (but categorization is skipped since data is pre-categorized)
