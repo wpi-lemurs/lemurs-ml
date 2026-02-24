@@ -22,6 +22,65 @@ from src.data_processing.merge_passive_data_and_labels import (
 )
 
 
+class ScreentimeAppCategorizer(BaseEstimator, TransformerMixin):
+    """
+    Extracts and categorizes screentime app data from the database.
+
+    This transformer performs the expensive categorization step ONCE during fit()
+    and stores the result, which can then be reused by downstream transformers.
+
+    This is the recommended first step in any pipeline that uses app categories,
+    as it separates the slow categorization from the fast feature engineering.
+
+    Parameters:
+    -----------
+    None
+
+    Attributes:
+    -----------
+    categorized_data_ : pd.DataFrame
+        The categorized screentime app data, set during fit()
+    """
+
+    def __init__(self):
+        self.categorized_data_ = None
+
+    def fit(self, X=None, y=None):
+        """
+        Extract and categorize screentime app data.
+
+        This is where the expensive categorization happens - only during fit(),
+        not during transform().
+        """
+        from src.data_processing.screentime_feature_engineering import load_and_clean_screentime_data
+
+        print("\n" + "="*80)
+        print("CATEGORIZING SCREENTIME APPS")
+        print("="*80)
+
+        # This does the categorization
+        self.categorized_data_ = load_and_clean_screentime_data()
+
+        print(f"[OK] Categorized {len(self.categorized_data_):,} records")
+        print(f"[OK] {self.categorized_data_['app_name'].nunique():,} unique apps")
+        print("="*80 + "\n")
+
+        return self
+
+    def transform(self, X=None):
+        """
+        Return the categorized data that was created during fit().
+
+        Returns:
+        --------
+        pd.DataFrame : The categorized screentime app data
+        """
+        if self.categorized_data_ is None:
+            raise RuntimeError("Must call fit() before transform()")
+
+        return self.categorized_data_
+
+
 class DataExtractor(BaseEstimator, TransformerMixin):
     """
     Extracts raw data from the database or CSV files.
@@ -558,7 +617,8 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         self.use_accurate_method = use_accurate_method
 
     def fit(self, X, y=None):
-        """Fit does nothing, returns self."""
+        """Store reference to categorized data if provided."""
+        self.categorized_data_ = X if isinstance(X, pd.DataFrame) else None
         return self
 
     def transform(self, X=None):
@@ -571,8 +631,9 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
 
         Parameters:
         -----------
-        X : None
-            Ignored - the merge functions extract data internally
+        X : pd.DataFrame or None
+            Pre-categorized screentime app data from upstream transformer (e.g., ScreentimeAppCategorizer).
+            If None, will load data internally (slower).
 
         Returns:
         --------
@@ -587,6 +648,9 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             propagate_positive_labels
         )
         import pandas as pd
+
+        # Use pre-categorized data if available
+        categorized_data = X if isinstance(X, pd.DataFrame) else getattr(self, 'categorized_data_', None)
 
         # Step 1: Get traditional hourly screentime features
         if self.target_type == 'phq9':
@@ -612,14 +676,16 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             )
             positive_class = 'at_risk'
 
-        # Step 2: Get sub-window category features
+        # Step 2: Get sub-window category features using pre-categorized data
         if self.target_type == 'phq9':
             subwindow_features = merge_subwindow_screentime_features_with_phq9(
+                screentime_app_df=categorized_data,  # Pass pre-categorized data
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours
             )
         else:
             subwindow_features = merge_subwindow_screentime_features_with_risk_labels(
+                screentime_app_df=categorized_data,  # Pass pre-categorized data
                 label_column=label_col,
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours

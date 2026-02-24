@@ -37,7 +37,8 @@ from src.pipeline.transformers import (
     HealthDataProcessor,
     LabelExtractor,
     FeatureLabelMerger,
-    SubWindowFeatureLabelMerger
+    SubWindowFeatureLabelMerger,
+    ScreentimeAppCategorizer
 )
 
 
@@ -413,12 +414,12 @@ def create_subwindow_pipeline(
     """
     Create a pipeline for mental health prediction using sub-window screentime features.
 
-    This pipeline uses app category-based features from sub-windows within a
-    larger lookback period. For example, with lookback_hours=12 and subwindow_hours=3,
-    it creates 4 sub-windows and calculates for each:
-    - Most used app category
-    - Time in that category
-    - Number of apps used
+    This pipeline separates the slow app categorization step from feature engineering:
+    1. ScreentimeAppCategorizer - extracts and categorizes apps (SLOW, done once in fit())
+    2. SubWindowFeatureLabelMerger - creates features using categorized data (FAST)
+
+    The categorization happens ONCE during fit(), then transform() reuses the result.
+    This makes running multiple models with different parameters much faster.
 
     Parameters:
     -----------
@@ -439,17 +440,28 @@ def create_subwindow_pipeline(
 
     Example:
     --------
+    >>> # Create pipeline
     >>> pipeline = create_subwindow_pipeline(
     ...     target_type='sleep',
     ...     lookback_hours=12,
     ...     subwindow_hours=3
     ... )
-    >>> pipeline.fit(None)
-    >>> data = pipeline.transform(None)
-    >>> # data is a dict with lookback_hours as key and DataFrame as value
+    >>>
+    >>> # Fit once - this does the slow categorization
+    >>> pipeline.fit(None)  # Takes a few minutes
+    >>>
+    >>> # Transform to get features - this is fast!
+    >>> data = pipeline.transform(None)  # Reuses categorized data from fit()
+    >>>
+    >>> # Can transform multiple times without re-categorizing
+    >>> data2 = pipeline.transform(None)  # Still fast!
     """
     steps = [
-        ('merge_subwindow_features_labels', SubWindowFeatureLabelMerger(
+        # Step 1: Categorize apps (SLOW - happens once in fit())
+        ('categorize_apps', ScreentimeAppCategorizer()),
+
+        # Step 2: Create features from categorized data (FAST - uses output from step 1)
+        ('merge_features_labels', SubWindowFeatureLabelMerger(
             target_type=target_type,
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
@@ -459,3 +471,5 @@ def create_subwindow_pipeline(
     ]
 
     return Pipeline(steps)
+
+
