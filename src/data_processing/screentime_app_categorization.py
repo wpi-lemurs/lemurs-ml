@@ -18,6 +18,32 @@ and pull from the csv to combine certain categories (e.g., all game categories i
 photography + video players into 'Media' category).
 '''
 
+# All Google Play Store GAME_* sub-genre IDs that should be collapsed into a single GAMES category
+GAME_SUBCATEGORIES = {
+    'GAME_ACTION', 'GAME_ADVENTURE', 'GAME_ARCADE', 'GAME_BOARD', 'GAME_CARD',
+    'GAME_CASINO', 'GAME_CASUAL', 'GAME_EDUCATIONAL', 'GAME_MUSIC', 'GAME_PUZZLE',
+    'GAME_RACING', 'GAME_ROLE_PLAYING', 'GAME_SIMULATION', 'GAME_SPORTS',
+    'GAME_STRATEGY', 'GAME_TRIVIA', 'GAME_WORD',
+}
+
+
+def normalize_category(category):
+    """
+    Normalize category names, collapsing all GAME_* subcategories into 'GAMES'.
+
+    Parameters:
+    -----------
+    category : str
+        Raw category string (e.g. from Google Play Store genreId)
+
+    Returns:
+    --------
+    str : Normalized category
+    """
+    if category in GAME_SUBCATEGORIES or category.startswith('GAME_'):
+        return 'GAMES'
+    return category
+
 
 def categorize_system_app(app_name):
     """
@@ -36,10 +62,10 @@ def categorize_system_app(app_name):
 
     # MANUAL OVERRIDES for specific apps that need recategorization
     manual_categories = {
-        'com.ss.android.ugc.trill': 'SOCIAL',  # TikTok
-        'com.mobile.legends': 'GAME_STRATEGY',  # Mobile Legends
+        'com.ss.android.ugc.trill': 'SOCIAL',       # TikTok
+        'com.mobile.legends': 'GAMES',               # Mobile Legends
         'app.revanced.android.youtube': 'VIDEO_PLAYERS',  # YouTube ReVanced
-        'com.rubenmayayo.reddit': 'SOCIAL',  # Reddit client
+        'com.rubenmayayo.reddit': 'SOCIAL',          # Reddit client
     }
 
     if app_name in manual_categories:
@@ -119,12 +145,15 @@ def categorize_apps(screentime_app_df):
         if play_store_app is not None:
             try:
                 category = play_store_app(app_name)['genreId']
-            except Exception as e:
+            except Exception:
                 pass  # Fall through to system categorization
 
         # Fallback to system app categorization
         if category is None:
             category = categorize_system_app(app_name)
+
+        # Normalize: collapse all GAME_* subcategories into GAMES
+        category = normalize_category(category)
 
         # update category for all rows with this app_name
         df.loc[df['app_name'] == app_name, 'app_category'] = category
