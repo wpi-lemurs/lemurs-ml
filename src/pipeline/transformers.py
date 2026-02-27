@@ -61,8 +61,8 @@ class ScreentimeAppCategorizer(BaseEstimator, TransformerMixin):
         # This does the categorization
         self.categorized_data_ = load_and_clean_screentime_data()
 
-        print(f"[OK] Categorized {len(self.categorized_data_):,} records")
-        print(f"[OK] {self.categorized_data_['app_name'].nunique():,} unique apps")
+        print(f"Categorized {len(self.categorized_data_):,} records")
+        print(f"{self.categorized_data_['app_name'].nunique():,} unique apps")
         print("="*80 + "\n")
 
         return self
