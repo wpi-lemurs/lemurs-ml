@@ -33,7 +33,6 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
     The screentime table has inaccurate start times. This function fixes this by:
     1. Joining screentime_app with screentime on screentime_id
     2. Calculating actual start_time = last_time_used - total_time_ms
-    3. Handling duplicates by keeping the most recent last_time_used for each app/screentime_id combination
 
     Parameters:
     -----------
