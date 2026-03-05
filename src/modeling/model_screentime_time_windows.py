@@ -441,10 +441,10 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Also create a summary plot showing only the best performing window
     if all_results:
-        # Find best performing window by accuracy
-        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_accuracy'])
-        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_accuracy'])
-        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_accuracy'])
+        # Find best performing window by f1 score if available, otherwise by accuracy
+        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_f1_score'] if 'lr_f1_score' in all_results[i] and all_results[i]['lr_f1_score'] is not None else all_results[i]['lr_accuracy'])
+        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_f1_score'] if 'rf_f1_score' in all_results[i] and all_results[i]['rf_f1_score'] is not None else all_results[i]['rf_accuracy'])
+        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_f1_score'] if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None else all_results[i]['baseline_accuracy'])
 
         fig, axes = plt.subplots(1, 3, figsize=(14, 5))
         fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
@@ -479,7 +479,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         axes[1].set_xlabel('Predicted Label', fontsize=11)
 
         # Best Baseline
-        best_baseline = all_results[best_rf_idx]
+        best_baseline = all_results[best_baseline_idx]
         baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
         sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
                    xticklabels=labels, yticklabels=labels,
