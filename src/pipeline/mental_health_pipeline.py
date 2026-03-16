@@ -409,7 +409,8 @@ def create_subwindow_pipeline(
     lookback_hours=12,
     subwindow_hours=3,
     propagate_labels=False,
-    use_accurate_method=False
+    use_accurate_method=False,
+    standardized=True
 ):
     """
     Create a pipeline for mental health prediction using sub-window screentime features.
@@ -433,6 +434,8 @@ def create_subwindow_pipeline(
         Whether to propagate positive labels
     use_accurate_method : bool, default=False
         If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    standardized : bool, default=True
+        Whether to standardize features
 
     Returns:
     --------
@@ -466,7 +469,8 @@ def create_subwindow_pipeline(
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method
+            use_accurate_method=use_accurate_method,
+            standardized=standardized
         ))
     ]
 

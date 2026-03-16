@@ -24,14 +24,33 @@ def detect_audio_format(audio_data: bytes) -> str:
         audio_data: Binary audio data
 
     Returns:
-        Detected format ('3gp', 'wav', 'mp3', 'amr', 'unknown')
+        Detected format ('3gp', 'wav', 'mp3', 'amr', 'm4a', 'aac', 'caf', 'unknown')
     """
     if not audio_data or len(audio_data) < 10:
         return 'unknown'
 
-    # Check for 3GP format
+    # Check for 3GP format (Android)
     if b'ftyp3gp' in audio_data[:20]:
         return '3gp'
+
+    # Check for M4A format (iOS) - MPEG-4 Audio
+    # M4A files use the same container as MP4 but with audio-specific ftyp brands
+    if b'ftyp' in audio_data[:12]:
+        # Check for M4A specific brands
+        if (b'M4A ' in audio_data[:20] or b'M4B ' in audio_data[:20] or
+            b'mp42' in audio_data[:20] or b'isom' in audio_data[:20]):
+            return 'm4a'
+
+    # Check for CAF format (iOS Core Audio Format)
+    if audio_data.startswith(b'caff'):
+        return 'caf'
+
+    # Check for AAC format (iOS/Android)
+    # AAC can have ADTS headers
+    if len(audio_data) >= 2:
+        # ADTS sync word: 0xFFF (12 bits) at start of frame
+        if audio_data[0] == 0xFF and (audio_data[1] & 0xF0) == 0xF0:
+            return 'aac'
 
     # Check for WAV format
     if audio_data.startswith(b'RIFF') and b'WAVE' in audio_data[:20]:
@@ -68,6 +87,28 @@ def validate_audio_data(audio_data: bytes, format_type: str) -> Tuple[bool, str]
     if format_type == '3gp':
         if b'ftyp3gp' not in audio_data[:20]:
             return False, "Invalid 3GP signature"
+
+    elif format_type == 'm4a':
+        if b'ftyp' not in audio_data[:12]:
+            return False, "Invalid M4A signature"
+        # Additional validation: check for presence of audio-related atoms
+        if not (b'M4A ' in audio_data[:50] or b'mp42' in audio_data[:50] or
+                b'isom' in audio_data[:50] or b'mdat' in audio_data[:100]):
+            return False, "Missing M4A audio markers"
+
+    elif format_type == 'caf':
+        if not audio_data.startswith(b'caff'):
+            return False, "Invalid CAF signature"
+        # CAF files should have version info after signature
+        if len(audio_data) < 8:
+            return False, "CAF file too short"
+
+    elif format_type == 'aac':
+        if len(audio_data) < 2:
+            return False, "AAC data too short"
+        # Validate ADTS sync word
+        if not (audio_data[0] == 0xFF and (audio_data[1] & 0xF0) == 0xF0):
+            return False, "Invalid AAC ADTS header"
 
     elif format_type == 'wav':
         if not audio_data.startswith(b'RIFF'):
@@ -268,7 +309,8 @@ def extract_audio_from_database(
                     successful_files.append(output_path)
 
                     # Try to convert to WAV if requested
-                    if convert_wav and format_type in ['3gp', 'amr']:
+                    # Include iOS formats (m4a, aac, caf) and Android formats (3gp, amr)
+                    if convert_wav and format_type in ['3gp', 'amr', 'm4a', 'aac', 'caf']:
                         wav_path = convert_to_wav(audio_data, output_path)
                         if wav_path:
                             successful_files.append(wav_path)
