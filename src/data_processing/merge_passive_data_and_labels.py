@@ -842,7 +842,8 @@ def merge_subwindow_screentime_features_with_risk_labels(
     label_column='suicide_risk_label',
     lookback_hours=12,
     subwindow_hours=3,
-    app_user_id=-1
+    app_user_id=-1,
+    standardized=True
 ):
     """
     Merge sub-window screentime category features with risk labels from surveys.
@@ -877,6 +878,10 @@ def merge_subwindow_screentime_features_with_risk_labels(
         Size of each sub-window in hours
     app_user_id : int, default=-1
         Filter to specific user ID, or -1 for all users
+    standardized : bool, default=True
+        If True, assume the survey time is 9AM for every user and anchor the
+        lookback window to that time (hour_0 = 9AM, hour_1 = 8AM, etc.).
+        If False, use the actual survey timestamp.
 
     Returns:
     --------
@@ -933,10 +938,15 @@ def merge_subwindow_screentime_features_with_risk_labels(
         survey_time = survey_row['timestamp']
         survey_id = survey_row.get('survey_response_id', idx)
 
+        # Anchor the reference time at 9AM if standardized; otherwise use actual survey time
+        reference_time = survey_time
+        if standardized:
+            reference_time = survey_time.normalize() + pd.Timedelta(hours=9)
+
         # Calculate sub-window features
         features = calculate_subwindow_features(
             screentime_app_df,
-            reference_time=survey_time,
+            reference_time=reference_time,
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
             user_id=user_id
@@ -945,7 +955,8 @@ def merge_subwindow_screentime_features_with_risk_labels(
         # Add metadata and label
         features['app_user_id'] = user_id
         features['survey_response_id'] = survey_id
-        features['timestamp'] = survey_time
+        # Overwrite timestamp with the reference time used for windowing
+        features['timestamp'] = reference_time
         features[label_column] = survey_row[label_column]
 
         all_features.append(features)
@@ -966,7 +977,8 @@ def merge_subwindow_screentime_features_with_phq9(
     phq9_df=None,
     lookback_hours=12,
     subwindow_hours=3,
-    app_user_id=-1
+    app_user_id=-1,
+    standardized=True
 ):
     """
     Merge sub-window screentime category features with PHQ-9 depression labels.
@@ -1005,5 +1017,6 @@ def merge_subwindow_screentime_features_with_phq9(
         label_column='severity_label',
         lookback_hours=lookback_hours,
         subwindow_hours=subwindow_hours,
-        app_user_id=app_user_id
+        app_user_id=app_user_id,
+        standardized=standardized
     )

@@ -124,7 +124,8 @@ class ScreentimeModelPipeline:
         test_size=0.3,
         random_state=42,
         save_confusion_matrices=True,
-        use_accurate_method=False
+        use_accurate_method=False,
+        standardized=True
     ):
         self.target_type = target_type
         self.time_windows = time_windows or [3, 6, 9, 12]
@@ -139,6 +140,7 @@ class ScreentimeModelPipeline:
         self.random_state = random_state
         self.save_confusion_matrices = save_confusion_matrices
         self.use_accurate_method = use_accurate_method
+        self.standardized = standardized
 
         # Initialize models
         if models is None:
@@ -153,7 +155,8 @@ class ScreentimeModelPipeline:
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours,
                 propagate_labels=self.propagate_labels,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=self.use_accurate_method,
+                standardized=self.standardized
             )
         elif target_type == 'phq9':
             self.data_pipeline = create_screentime_phq9_pipeline(
