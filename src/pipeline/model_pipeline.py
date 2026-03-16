@@ -26,6 +26,7 @@ Example usage:
 import numpy as np
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 from sklearn.preprocessing import StandardScaler
+from sklearn.feature_extraction import FeatureHasher
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, roc_auc_score
@@ -123,7 +124,8 @@ class ScreentimeModelPipeline:
         test_size=0.3,
         random_state=42,
         save_confusion_matrices=True,
-        use_accurate_method=False
+        use_accurate_method=False,
+        standardized=True
     ):
         self.target_type = target_type
         self.time_windows = time_windows or [3, 6, 9, 12]
@@ -138,6 +140,7 @@ class ScreentimeModelPipeline:
         self.random_state = random_state
         self.save_confusion_matrices = save_confusion_matrices
         self.use_accurate_method = use_accurate_method
+        self.standardized = standardized
 
         # Initialize models
         if models is None:
@@ -152,7 +155,8 @@ class ScreentimeModelPipeline:
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours,
                 propagate_labels=self.propagate_labels,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=self.use_accurate_method,
+                standardized=self.standardized
             )
         elif target_type == 'phq9':
             self.data_pipeline = create_screentime_phq9_pipeline(
@@ -365,16 +369,44 @@ class ScreentimeModelPipeline:
         # Ensure all features are numeric
         X = data[feature_cols].copy()
 
-        # Apply one-hot encoding to categorical columns
+        # Apply FeatureHasher to categorical columns
         non_numeric_cols = X.select_dtypes(exclude=['number']).columns.tolist()
         if non_numeric_cols:
-            print(f"Applying one-hot encoding to categorical columns: {non_numeric_cols}")
-            # Use pd.get_dummies for one-hot encoding
-            X = pd.get_dummies(X, columns=non_numeric_cols, drop_first=True, dummy_na=False)
-            # Convert boolean columns to int (0/1)
-            bool_cols = X.select_dtypes(include=['bool']).columns
-            X[bool_cols] = X[bool_cols].astype(int)
-            print(f"After encoding: {X.shape[1]} features")
+            print(f"Applying FeatureHasher to categorical columns: {non_numeric_cols}")
+
+            # Separate numeric and categorical features
+            X_numeric = X.select_dtypes(include=['number']).copy()
+            X_categorical = X[non_numeric_cols].copy()
+
+            # Use FeatureHasher to encode categorical features
+            # n_features should be a power of 2, set to reasonable default
+            n_hash_features = 128
+            hasher = FeatureHasher(n_features=n_hash_features, input_type='string')
+
+            # Convert each row to dict format for FeatureHasher
+            # Combine all categorical columns into single dict per row
+            cat_dicts = []
+            for idx, row in X_categorical.iterrows():
+                row_dict = {}
+                for col in non_numeric_cols:
+                    # Create feature name as "column:value" to avoid collisions
+                    key = f"{col}:{row[col]}"
+                    row_dict[key] = 1
+                cat_dicts.append(row_dict)
+
+            # Transform to sparse matrix then to dense array
+            X_hashed = hasher.transform(cat_dicts).toarray()
+
+            # Convert to DataFrame for easier concatenation
+            X_hashed_df = pd.DataFrame(
+                X_hashed,
+                index=X.index,
+                columns=[f'hash_{i}' for i in range(n_hash_features)]
+            )
+
+            # Combine numeric and hashed features
+            X = pd.concat([X_numeric, X_hashed_df], axis=1)
+            print(f"After hashing: {X.shape[1]} features ({X_numeric.shape[1]} numeric + {n_hash_features} hashed)")
 
         X = X.fillna(0)
         y = data[label_col]

@@ -61,8 +61,8 @@ class ScreentimeAppCategorizer(BaseEstimator, TransformerMixin):
         # This does the categorization
         self.categorized_data_ = load_and_clean_screentime_data()
 
-        print(f"[OK] Categorized {len(self.categorized_data_):,} records")
-        print(f"[OK] {self.categorized_data_['app_name'].nunique():,} unique apps")
+        print(f"Categorized {len(self.categorized_data_):,} records")
+        print(f"{self.categorized_data_['app_name'].nunique():,} unique apps")
         print("="*80 + "\n")
 
         return self
@@ -609,12 +609,13 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, target_type='suicide_risk', lookback_hours=12,
-                 subwindow_hours=3, propagate_labels=False, use_accurate_method=False):
+                 subwindow_hours=3, propagate_labels=False, use_accurate_method=False, standardized=True):
         self.target_type = target_type
         self.lookback_hours = lookback_hours
         self.subwindow_hours = subwindow_hours
         self.propagate_labels = propagate_labels
         self.use_accurate_method = use_accurate_method
+        self.standardized = standardized
 
     def fit(self, X, y=None):
         """Store reference to categorized data if provided."""
@@ -649,6 +650,10 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         )
         import pandas as pd
 
+        def _standardize_to_9am(series: pd.Series) -> pd.Series:
+            series = pd.to_datetime(series, errors='coerce')
+            return series.dt.normalize() + pd.Timedelta(hours=9)
+
         # Use pre-categorized data if available
         categorized_data = X if isinstance(X, pd.DataFrame) else getattr(self, 'categorized_data_', None)
 
@@ -658,6 +663,11 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
                 hours_before_survey=self.lookback_hours,
                 use_accurate_method=self.use_accurate_method
             )
+            if self.standardized and not hourly_features.empty:
+                if 'survey_timestamp' in hourly_features.columns:
+                    hourly_features['survey_timestamp'] = _standardize_to_9am(hourly_features['survey_timestamp'])
+                elif 'timestamp' in hourly_features.columns:
+                    hourly_features['timestamp'] = _standardize_to_9am(hourly_features['timestamp'])
             label_col = 'severity_label'
             positive_class = 'depressed'
         else:
@@ -674,6 +684,11 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
                 hours_before_survey=self.lookback_hours,
                 use_accurate_method=self.use_accurate_method
             )
+            if self.standardized and not hourly_features.empty:
+                if 'survey_timestamp' in hourly_features.columns:
+                    hourly_features['survey_timestamp'] = _standardize_to_9am(hourly_features['survey_timestamp'])
+                elif 'timestamp' in hourly_features.columns:
+                    hourly_features['timestamp'] = _standardize_to_9am(hourly_features['timestamp'])
             positive_class = 'at_risk'
 
         # Step 2: Get sub-window category features using pre-categorized data
@@ -681,15 +696,24 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             subwindow_features = merge_subwindow_screentime_features_with_phq9(
                 screentime_app_df=categorized_data,  # Pass pre-categorized data
                 lookback_hours=self.lookback_hours,
-                subwindow_hours=self.subwindow_hours
+                subwindow_hours=self.subwindow_hours,
+                standardized=self.standardized
             )
         else:
             subwindow_features = merge_subwindow_screentime_features_with_risk_labels(
                 screentime_app_df=categorized_data,  # Pass pre-categorized data
                 label_column=label_col,
                 lookback_hours=self.lookback_hours,
-                subwindow_hours=self.subwindow_hours
+                subwindow_hours=self.subwindow_hours,
+                standardized=self.standardized
             )
+
+        # If standardized, align sub-window timestamps to 9AM to match hourly features
+        if self.standardized and not subwindow_features.empty:
+            if 'timestamp' in subwindow_features.columns:
+                subwindow_features['timestamp'] = _standardize_to_9am(subwindow_features['timestamp'])
+            if 'survey_timestamp' in subwindow_features.columns:
+                subwindow_features['survey_timestamp'] = _standardize_to_9am(subwindow_features['survey_timestamp'])
 
         # Step 3: Merge both feature sets
         # Merge on common columns: app_user_id and timestamp/survey_timestamp
@@ -700,18 +724,22 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             # Identify merge keys
             merge_keys = ['app_user_id']
 
-            # Handle different timestamp column names
-            if 'survey_timestamp' in hourly_features.columns and 'timestamp' in subwindow_features.columns:
-                # Rename for merge
+            hourly_has_survey = 'survey_timestamp' in hourly_features.columns
+            hourly_has_ts = 'timestamp' in hourly_features.columns
+            sub_has_survey = 'survey_timestamp' in subwindow_features.columns
+            sub_has_ts = 'timestamp' in subwindow_features.columns
+
+            if hourly_has_survey and sub_has_ts:
                 subwindow_features = subwindow_features.rename(columns={'timestamp': 'survey_timestamp'})
+                sub_has_survey = True
+                sub_has_ts = False
+
+            if hourly_has_survey and sub_has_survey:
                 merge_keys.append('survey_timestamp')
-            elif 'timestamp' in hourly_features.columns and 'timestamp' in subwindow_features.columns:
+            elif hourly_has_ts and sub_has_ts:
                 merge_keys.append('timestamp')
-            elif 'survey_timestamp' in hourly_features.columns and 'survey_timestamp' in subwindow_features.columns:
-                merge_keys.append('survey_timestamp')
 
             # Merge the dataframes
-            # Drop label column from subwindow_features to avoid duplicate
             subwindow_cols_to_keep = [col for col in subwindow_features.columns
                                      if col not in [label_col, 'survey_response_id'] or col in merge_keys]
 
@@ -722,8 +750,14 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
                 how='inner'
             )
 
-            print(f"Combined features: {len([c for c in merged.columns if c.startswith('hour_')])} hourly + "
-                  f"{len([c for c in merged.columns if c.startswith(('most_used', 'num_apps'))])} sub-window features")
+            if merged.empty and len(merge_keys) > 1:
+                print("Warning: No rows after merging on timestamp; retrying merge on app_user_id only")
+                merged = pd.merge(
+                    hourly_features,
+                    subwindow_features[subwindow_cols_to_keep],
+                    on=['app_user_id'],
+                    how='inner'
+                )
 
         # Filter out N/A labels for sleep
         if self.target_type == 'sleep' and not merged.empty:
