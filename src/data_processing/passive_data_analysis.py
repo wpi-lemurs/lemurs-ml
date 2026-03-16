@@ -59,7 +59,7 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
 
     # Make copies to avoid modifying originals
     app_df = screentime_app_df.copy()
-    screen_df = screentime_df[['id', 'app_user_id']].copy()
+    screen_df = screentime_df.copy()
     screen_df = screen_df.rename(columns={'id': 'screentime_id'})
 
     # Join tables to get app_user_id
@@ -68,11 +68,13 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
     # Convert timestamps to datetime
     df['last_time_used'] = pd.to_datetime(df['last_time_used'])
 
-    # Handle duplicates: Keep only the most recent record for each app per screentime_id
-    # Since total_time_ms is cumulative, duplicates with different last_time_used occur when
-    # the same app has the same cumulative time but was recorded at different moments
+    # Handle duplicates: sometimes same screentime data is collected in multiple sessions (same info, different timestamp)
+    before_drop = len(df)
     df = df.sort_values(['screentime_id', 'app_name', 'last_time_used'], ascending=[True, True, True])
-    df = df.drop_duplicates(subset=['screentime_id', 'app_name', 'total_time_ms'], keep='last')
+    df = df.drop_duplicates(
+        subset=['app_user_id', 'start_time', 'end_time', 'app_name', 'total_time_ms', 'last_time_used'],
+        keep='first') # keep earliest record, the rest are all repeats
+    print(f"Filtered out {before_drop - len(df):,} duplicate sessions.")
 
     # Filter out launcher and controller apps (don't represent meaningful user activity)
     before_filter = len(df)
@@ -80,9 +82,13 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
     df = df[~filter_mask].copy()
     print(f"Filtered out {before_filter - len(df):,} launcher/controller app records")
 
-    # Calculate actual start time: start_time = last_time_used - total_time_ms
+    # Calculate start time: start_time = last_time_used - total_time_ms
     df['total_time_seconds'] = df['total_time_ms'] / 1000
     df['calculated_start_time'] = df['last_time_used'] - pd.to_timedelta(df['total_time_seconds'], unit='s')
+    df = clean_overlapping_screentime_sessions(df)
+
+    # clean screentime df
+    screentime_df = clean_screentime_gaps(screentime_df)
 
     # Select and order columns
     result = df[['app_user_id', 'app_name', 'calculated_start_time', 'last_time_used', 'total_time_ms', 'total_time_seconds']].copy()
@@ -94,6 +100,70 @@ def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screent
 
     return result
 
+def clean_screentime_gaps(screentime_df):
+    """
+    Clean screentime data by recalculating start_times 
+    """
+    df = screentime_df.copy()
+
+    # convert start_time and end_time to datetime
+    df['start_time'] = pd.to_datetime(df['start_time'])
+    df['end_time'] = pd.to_datetime(df['end_time'])
+
+    # group by app_user_id and sort by start_time
+    df = df.sort_values(['app_user_id', 'start_time']).reset_index(drop=True)
+
+    # calculate potential start_time based on user's previous end_time
+    df['potential_start_time'] = df.groupby('app_user_id')['end_time'].shift(1)
+
+    # if potential_start_time is within 2 minutes of current start_time, use it as the new start_time
+    # this is because there is sometimes a small delay in sending consecutive sessions
+    df['start_time'] = np.where(
+        (df['potential_start_time'].notna()) &
+        ((df['start_time'] - df['potential_start_time']).dt.total_seconds() <= 120),
+        df['potential_start_time'],
+        df['start_time']
+    )
+
+    return df
+
+def clean_overlapping_screentime_sessions(df):
+    """
+    Clean screentime data by adjusting overlapping sessions for each user.
+
+    For each user, if a session's calculated_start_time overlaps with the previous session's last_time_used,
+    adjust the current session's last_time_used to be the previous session's end time, and recalculate
+    the calculated_start_time accordingly.
+
+    THIS ONLY APPLIES TO SESSIONS PRIOR TO 2-26-2026. Extraction code is patched for following sessions.
+
+    Parameters:
+    -----------
+    df : DataFrame
+        Joined screentime & screentime_app DataFrame.
+
+    Returns:
+    --------
+    DataFrame with adjusted session times to eliminate overlaps.
+    """
+    df = df.copy()
+    df = df.sort_values(['app_user_id', 'calculated_start_time'])
+    for user_id, user_df in df.groupby('app_user_id'):
+        # check for overlapping sessions
+        user_df = user_df.sort_values('calculated_start_time')
+        user_df['prev_end_time'] = user_df['last_time_used'].shift(1)
+        
+        # if first row's start time is before session start time, then the row's start time is actually the end time and the end time is actually totaltimes later
+        if user_df['calculated_start_time'].iloc[0] < user_df['start_time'].iloc[0] and user_df['last_time_used'].iloc[0] < pd.to_datetime('2026-02-26'):
+            user_df['calculated_start_time'].iloc[0] = user_df['last_time_used'].iloc[0]
+            user_df['last_time_used'].iloc[0] = user_df['last_time_used'].iloc[0] + pd.to_timedelta(user_df['total_time_seconds'].iloc[0], unit='s')
+            user_df = user_df.sort_values('calculated_start_time')
+
+        # update time columns in main df
+        df.loc[user_df.index, 'last_time_used'] = user_df['last_time_used']
+        df.loc[user_df.index, 'calculated_start_time'] = user_df['calculated_start_time']
+
+    return df
 
 def _process_passive_data_dataframe(df, agg_func, time_unit, start_col='start_timestamp', value_col=None, app_user_id=-1, date_range=None):
     """
