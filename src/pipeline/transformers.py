@@ -609,7 +609,7 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, target_type='suicide_risk', lookback_hours=12,
-                 subwindow_hours=3, propagate_labels=False, use_accurate_method=False, standardized=True):
+                 subwindow_hours=3, propagate_labels=False, use_accurate_method=True, standardized=True):
         self.target_type = target_type
         self.lookback_hours = lookback_hours
         self.subwindow_hours = subwindow_hours
