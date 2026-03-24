@@ -49,7 +49,7 @@ def create_screentime_risk_pipeline(
     app_user_id=-1,
     date_range=None,
     propagate_labels=False,
-    use_accurate_method=False
+    use_accurate_method=True
 ):
     """
     Create a pipeline for risk prediction using screentime data.
