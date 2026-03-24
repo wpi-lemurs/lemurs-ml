@@ -3,6 +3,7 @@ import random
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score
@@ -72,7 +73,19 @@ def _prepare_features_labels(df, target_type: str) -> Tuple[np.ndarray, np.ndarr
     selector.fit(df)
     feature_df = selector.transform(df)
 
-    # Keep only numeric columns (datetime/object columns cause float cast errors)
+    # Separate column types
+    datetime_cols = feature_df.select_dtypes(include=["datetime64[ns]"]).columns
+    cat_cols = feature_df.select_dtypes(include=["object", "category", "bool"]).columns
+
+    # Remove datetimes (they cannot be fed directly to the model)
+    feature_df = feature_df.drop(columns=list(datetime_cols), errors="ignore")
+
+    # One-hot encode categoricals (keep all levels, fill missing with explicit token)
+    if len(cat_cols) > 0:
+        feature_df[cat_cols] = feature_df[cat_cols].fillna("<missing>")
+        feature_df = pd.get_dummies(feature_df, columns=list(cat_cols), dtype=float)
+
+    # Ensure numeric types and drop any remaining non-numeric columns
     numeric_df = feature_df.select_dtypes(include=[np.number]).copy()
     dropped_cols = set(feature_df.columns) - set(numeric_df.columns)
     if dropped_cols:
@@ -248,12 +261,12 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "sleep"),
+        target_type=os.getenv("TARGET_TYPE", "self_harm"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "false").lower() == "true",
         hidden_layers=(128, 64),
-        epochs=int(os.getenv("EPOCHS", "15")),
+        epochs=int(os.getenv("EPOCHS", "20")),
         use_subwindows=os.getenv("USE_SUBWINDOWS", "true").lower() == "true",
         lookback_hours=int(os.getenv("LOOKBACK_HOURS", "24")),
         subwindow_hours=int(os.getenv("SUBWINDOW_HOURS", "3")),
