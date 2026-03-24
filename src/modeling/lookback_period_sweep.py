@@ -155,7 +155,8 @@ def run_sweep(
                     lookback_hours=lookback,
                     subwindow_hours=subwindow,
                     propagate_labels=propagate_labels,
-                    use_accurate_method=True
+                    use_accurate_method=True,
+                    standardized=False
                 )
 
                 # Fit the pipeline (but categorization is skipped since data is pre-categorized)
@@ -546,7 +547,7 @@ def main():
     MAX_LOOKBACK = 30             # sweep 1 → MAX_LOOKBACK inclusive
     PROPAGATE_LABELS = False       # propagate positive labels across a user
     BALANCED_WEIGHT = False       # use balanced class weights
-    USE_LOOCV = False             # leave-one-user-out CV instead of train/test split
+    USE_LOOCV = True             # leave-one-user-out CV instead of train/test split
 
     # Lookback periods to highlight in subwindow comparison plot
     HIGHLIGHT_LOOKBACKS = [6, 12, 18, 24, 30]
