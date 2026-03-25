@@ -192,7 +192,9 @@ def run_sweep(
                     label_col_map = {
                         'suicide_risk': 'suicide_risk_label',
                         'self_harm': 'self_harm_risk_label',
-                        'sleep': 'sleep_label'
+                        'sleep': 'sleep_label',
+                        'negative_emotions': 'negative_emotion_label',
+                        'social_connection': 'social_connection_label'
                     }
                     label_col = label_col_map[target_type]
                     positive_class = 'at_risk'
@@ -543,11 +545,11 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     # CONFIGURATION - Edit these parameters
     # ══════════════════════════════════════════════════════════════════════════
-    TARGET_TYPE = 'sleep'  # 'suicide_risk' | 'self_harm' | 'sleep' | 'phq9'
+    TARGET_TYPE = 'social_connection'  # 'suicide_risk' | 'self_harm' | 'sleep' | 'phq9' | 'negative_emotions' | 'social_connection'
     MAX_LOOKBACK = 30             # sweep 1 → MAX_LOOKBACK inclusive
     PROPAGATE_LABELS = False       # propagate positive labels across a user
-    BALANCED_WEIGHT = False       # use balanced class weights
-    USE_LOOCV = True             # leave-one-user-out CV instead of train/test split
+    BALANCED_WEIGHT = False        # use balanced class weights
+    USE_LOOCV = False             # leave-one-user-out CV instead of train/test split
 
     # Lookback periods to highlight in subwindow comparison plot
     HIGHLIGHT_LOOKBACKS = [6, 12, 18, 24, 30]
@@ -618,4 +620,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

@@ -57,7 +57,7 @@ def create_screentime_risk_pipeline(
     Parameters:
     -----------
     target_type : str, default='suicide_risk'
-        Target to predict: 'suicide_risk', 'self_harm', or 'sleep'
+        Target to predict: 'suicide_risk', 'self_harm', 'sleep', 'social_connection', or 'negative_emotions'
     time_windows : list of int, default=[3, 6, 9, 12]
         Hours before survey to use for features
     fill_method : str or None, default='zero'
@@ -475,5 +475,3 @@ def create_subwindow_pipeline(
     ]
 
     return Pipeline(steps)
-
-

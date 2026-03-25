@@ -249,7 +249,7 @@ print(f"✓ Saved: 03a_top_apps_in_top_categories.png")
 print("\nTop 5 Apps by Category:")
 for category in top_6_categories:
     category_df = df[df['app_category'] == category]
-    app_stats = category_df.groupby('app_name')['total_time_hours'].sum().sort_values(ascending=False).head(5)
+    app_stats = category_df.groupby('app_name')['total_time_hours'].sum().sort_values(ascending=False).head(1)
     print(f"\n{category}:")
     for app, hours in app_stats.items():
         print(f"  - {app}: {hours:,.1f} hours")

@@ -6,12 +6,14 @@ Supports multiple prediction targets:
 - Suicide risk prediction (suicide_risk)
 - Self-harm risk prediction (self_harm)
 - Sleep risk prediction (sleep)
+- Negative emotions prediction (negative_emotions)
 
 Usage:
-    python model_screentime_time_windows.py phq9          # Depression prediction
-    python model_screentime_time_windows.py suicide_risk  # Suicide risk prediction
-    python model_screentime_time_windows.py self_harm     # Self-harm risk prediction
-    python model_screentime_time_windows.py sleep         # Sleep risk prediction
+    python model_screentime_time_windows.py phq9               # Depression prediction
+    python model_screentime_time_windows.py suicide_risk       # Suicide risk prediction
+    python model_screentime_time_windows.py self_harm          # Self-harm risk prediction
+    python model_screentime_time_windows.py sleep              # Sleep risk prediction
+    python model_screentime_time_windows.py negative_emotions  # Negative emotions prediction
 
 Optional flags:
     --propagate, -p   Propagate positive labels to all entries for users with any positive label
@@ -48,7 +50,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - data: DataFrame with hourly screentime features and target labels
     - time_window: number of hours before survey (for reporting)
     - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
-                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
+                   'self_harm' for self-harm risk, 'sleep' for sleep risk prediction,
+                   or 'negative_emotions' for negative emotions prediction
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
@@ -83,8 +86,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         prediction_task = 'Sleep Risk'
         # drop N/A risk label rows with afternoon data
         data = data[data['sleep_label'] != 'N/A']
+    elif target_type == 'negative_emotions':
+        label_col = 'negative_emotion_label'
+        positive_class = 'at_risk'
+        output_prefix = 'daily_screentime_negative_emotions'
+        prediction_task = 'Negative Emotions'
     else:
-        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
 
     class_weight = 'balanced' if balanced_class_weight else None
 
@@ -535,8 +543,13 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         merge_function = None
         label_column = 'sleep_label'
         use_generic = True
+    elif target_type == 'negative_emotions':
+        task_name = "NEGATIVE EMOTIONS PREDICTION"
+        merge_function = None
+        label_column = 'negative_emotion_label'
+        use_generic = True
     else:
-        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
+        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
 
     print("="*80)
     print(f"{task_name} - HOURLY SCREENTIME FEATURES")
@@ -651,11 +664,11 @@ if __name__ == '__main__':
     # Parse command line arguments
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
-        if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep']:
+        if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep', 'negative_emotions']:
             target_type = target
         else:
             print(f"Invalid target type: {target}")
-            print("Valid options: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'")
+            print("Valid options: 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
             print("Using default: 'phq9'")
 
     # Check for optional flags
@@ -673,4 +686,3 @@ if __name__ == '__main__':
         
     # Run main with parsed arguments
     main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
-
