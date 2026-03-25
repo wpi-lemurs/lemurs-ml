@@ -2,11 +2,12 @@ import os
 import random
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
@@ -160,6 +161,9 @@ def train_one_window(
     lr: float = 1e-3,
     epochs: int = 20,
     batch_size: int = 64,
+    window_id: Optional[int] = None,
+    save_plots: bool = True,
+    plots_dir: str = "data",
 ):
     X, y, feature_names, classes = _prepare_features_labels(df, target_type)
     if X.size == 0 or y.size == 0:
@@ -175,36 +179,80 @@ def train_one_window(
 
     train_loader, val_loader = _make_loaders(X_train, X_val, y_train, y_val, batch_size=batch_size)
 
+    train_losses, val_losses = [], []
+    cm = None
+
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
-            # 1: Zero the gradients
             optimizer.zero_grad()
-            # 2: Make predictions
             logits = model(xb)
-            # 3: Calculate loss
             loss = criterion(logits, yb)
-            # 4: Backward pass
             loss.backward()
-            # 5: Update weights
             optimizer.step()
             epoch_loss += loss.item() * xb.size(0)
-        # Evaluate model
+        train_loss = epoch_loss / len(train_loader.dataset)
+        train_losses.append(train_loss)
+
         model.eval()
         preds, targets = [], []
+        val_loss_sum = 0.0
         with torch.no_grad():
             for xb, yb in val_loader:
-                xb = xb.to(device)
+                xb, yb = xb.to(device), yb.to(device)
                 logits = model(xb)
+                val_loss = criterion(logits, yb)
+                val_loss_sum += val_loss.item() * xb.size(0)
                 preds.append(torch.argmax(logits, dim=1).cpu().numpy())
-                targets.append(yb.numpy())
+                targets.append(yb.cpu().numpy())
         preds = np.concatenate(preds)
         targets = np.concatenate(targets)
+        val_loss = val_loss_sum / len(val_loader.dataset)
+        val_losses.append(val_loss)
+
         acc = accuracy_score(targets, preds)
         f1 = f1_score(targets, preds, zero_division=0)
-        print(f"Epoch {epoch+1}/{epochs} - loss={epoch_loss/len(train_loader.dataset):.4f} acc={acc:.3f} f1={f1:.3f}")
+        cm = confusion_matrix(targets, preds, labels=[0, 1])
+        print(
+            f"Epoch {epoch+1}/{epochs} - "
+            f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+            f"acc={acc:.3f} f1={f1:.3f}"
+        )
+
+    if save_plots:
+        os.makedirs(plots_dir, exist_ok=True)
+        tag = f"{target_type}_{window_id if window_id is not None else 'val'}"
+        # Confusion matrix plot
+        fig, ax = plt.subplots(figsize=(5, 4))
+        im = ax.imshow(cm, cmap="Blues")
+        ax.set_title(f"Confusion Matrix — {target_type} ({tag})", fontsize=12)
+        ax.set_xlabel("Predicted", fontsize=10)
+        ax.set_ylabel("Actual", fontsize=10)
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
+        ax.set_yticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
+        for (i, j), v in np.ndenumerate(cm):
+            ax.text(j, i, str(v), ha="center", va="center", fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        fig.text(0.5, 0.02, f"F1 score: {f1:.3f}", ha="center", fontsize=10)
+        fig.tight_layout(rect=[0, 0.05, 1, 0.97])
+        plt.savefig(os.path.join(plots_dir, f"confusion_matrix_{tag}.png"), dpi=200)
+        plt.close(fig)
+
+        # Learning curve plot
+        fig, ax = plt.subplots(figsize=(4, 3))
+        ax.plot(train_losses, label="train")
+        ax.plot(val_losses, label="val")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.set_title("Learning Curve")
+        ax.legend()
+        fig.tight_layout()
+        plt.savefig(os.path.join(plots_dir, f"learning_curve_{tag}.png"), dpi=200)
+        plt.close(fig)
 
     return {
         "model": model,
@@ -213,6 +261,9 @@ def train_one_window(
         "classes": classes,
         "val_accuracy": acc,
         "val_f1": f1,
+        "confusion_matrix": cm,
+        "train_losses": train_losses,
+        "val_losses": val_losses,
     }
 
 
@@ -253,6 +304,7 @@ def run_experiment(
                 target_type=target_type,
                 hidden_layers=hidden_layers,
                 epochs=epochs,
+                window_id=window,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Window {window}h failed: {exc}")
@@ -261,7 +313,7 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "self_harm"),
+        target_type=os.getenv("TARGET_TYPE", "sleep"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "false").lower() == "true",
