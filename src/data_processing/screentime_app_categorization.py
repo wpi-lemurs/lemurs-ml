@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import pandas as pd
@@ -25,6 +26,9 @@ GAME_SUBCATEGORIES = {
     'GAME_RACING', 'GAME_ROLE_PLAYING', 'GAME_SIMULATION', 'GAME_SPORTS',
     'GAME_STRATEGY', 'GAME_TRIVIA', 'GAME_WORD',
 }
+
+
+CACHE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'app_category_cache.json')
 
 
 def normalize_category(category):
@@ -113,6 +117,22 @@ def categorize_system_app(app_name):
     return 'UNKNOWN'
 
 
+def _load_cache():
+    if os.path.exists(CACHE_PATH):
+        try:
+            with open(CACHE_PATH, 'r', encoding='utf-8') as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_cache(cache):
+    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+    with open(CACHE_PATH, 'w', encoding='utf-8') as fh:
+        json.dump(cache, fh)
+
+
 def categorize_apps(screentime_app_df):
     """
     Input a dataframe of screentime app data and create a new column for app categories.
@@ -132,33 +152,38 @@ def categorize_apps(screentime_app_df):
     unique_apps = df['app_name'].unique().tolist()
     total_apps = len(unique_apps)
 
-    print(f"Categorizing {total_apps} unique apps...")
+    cache = _load_cache()
+    category_map = {}
+
+    print(f"Categorizing {total_apps} unique apps (cache hit rate will speed this up)...")
 
     for idx, app_name in enumerate(unique_apps, 1):
-        # Progress indicator every 50 apps
+        if app_name in cache:
+            category_map[app_name] = cache[app_name]
+            continue
+
         if idx % 50 == 0 or idx == total_apps:
             print(f"  Progress: {idx}/{total_apps} apps ({idx/total_apps*100:.1f}%)")
 
         category = None
 
-        # Try Google Play Store first if available
         if play_store_app is not None:
             try:
                 category = play_store_app(app_name)['genreId']
             except Exception:
-                pass  # Fall through to system categorization
+                category = None
 
-        # Fallback to system app categorization
         if category is None:
             category = categorize_system_app(app_name)
 
-        # Normalize: collapse all GAME_* subcategories into GAMES
         category = normalize_category(category)
+        cache[app_name] = category
+        category_map[app_name] = category
 
-        # update category for all rows with this app_name
-        df.loc[df['app_name'] == app_name, 'app_category'] = category
+    _save_cache(cache)
 
-    print(f"[OK] Completed categorizing all {total_apps} apps!")
+    df['app_category'] = df['app_name'].map(category_map)
+    print(f"[OK] Completed categorizing all {total_apps} apps! (cached: {len(cache)} entries)")
     return df
 
 
