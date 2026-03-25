@@ -54,7 +54,7 @@ class ScreentimeModelPipeline:
     Parameters:
     -----------
     target_type : str, default='suicide_risk'
-        Target to predict: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
+        Target to predict: 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'
     time_windows : list of int, default=[3, 6, 9, 12]
         Hours before survey to use for features (ignored if use_subwindows=True)
     models : list of str or dict, default=['logistic_regression', 'random_forest']
@@ -165,7 +165,7 @@ class ScreentimeModelPipeline:
                 propagate_labels=self.propagate_labels,
                 use_accurate_method=self.use_accurate_method
             )
-        else:
+        elif target_type in ['suicide_risk', 'self_harm', 'sleep', 'negative_emotions']:
             self.data_pipeline = create_screentime_risk_pipeline(
                 target_type=self.target_type,
                 time_windows=self.time_windows,
@@ -173,6 +173,8 @@ class ScreentimeModelPipeline:
                 propagate_labels=self.propagate_labels,
                 use_accurate_method=self.use_accurate_method
             )
+        else:
+            raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
 
         # Store results
         self.results_ = {}
@@ -215,7 +217,8 @@ class ScreentimeModelPipeline:
             label_col_map = {
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
-                'sleep': 'sleep_label'
+                'sleep': 'sleep_label',
+                'negative_emotions': 'negative_emotion_label'
             }
             return {
                 'label_col': label_col_map[self.target_type],
@@ -946,4 +949,3 @@ def run_experiment(
     )
 
     return pipeline.fit_predict()
-

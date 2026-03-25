@@ -381,7 +381,8 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                 label_col_map = {
                     'suicide_risk': 'suicide_risk_label',
                     'self_harm': 'self_harm_risk_label',
-                    'sleep': 'sleep_label'
+                    'sleep': 'sleep_label',
+                    'negative_emotions': 'negative_emotion_label'
                 }
                 label_col = label_col_map[self.target_type]
 
@@ -489,11 +490,13 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
         if self.target_type == 'phq9':
             self.label_col_ = 'severity_label'
             self.classes_ = ['not_depressed', 'depressed']
-        elif self.target_type in ['suicide_risk', 'self_harm', 'sleep']:
+        elif self.target_type in ['suicide_risk', 'self_harm', 'sleep', 'negative_emotions', 'social_connection']:
             label_col_map = {
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
-                'sleep': 'sleep_label'
+                'sleep': 'sleep_label',
+                'negative_emotions': 'negative_emotion_label',
+                'social_connection': 'social_connection_label'
             }
             self.label_col_ = label_col_map[self.target_type]
             self.classes_ = ['not_at_risk', 'at_risk']
@@ -675,7 +678,9 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             label_col_map = {
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
-                'sleep': 'sleep_label'
+                'sleep': 'sleep_label',
+                'negative_emotions': 'negative_emotion_label',
+                'social_connection': 'social_connection_label'
             }
             label_col = label_col_map[self.target_type]
 
