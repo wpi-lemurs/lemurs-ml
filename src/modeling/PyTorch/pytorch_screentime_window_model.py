@@ -133,13 +133,28 @@ class ScreentimeMLP(nn.Module):
         return self.net(x)
 
 
-def _make_loaders(X_train, X_val, y_train, y_val, batch_size: int = 64):
+def _make_loaders(
+    X_train,
+    X_val,
+    y_train,
+    y_val,
+    batch_size: int = 64,
+    use_weighted_sampler: bool = False,
+):
     train_ds = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
     val_ds = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.long))
-    return (
-        DataLoader(train_ds, batch_size=batch_size, shuffle=True),
-        DataLoader(val_ds, batch_size=batch_size, shuffle=False),
-    )
+
+    if use_weighted_sampler:
+        classes, counts = np.unique(y_train, return_counts=True)
+        class_weights = {cls: counts.sum() / (len(classes) * cnt) for cls, cnt in zip(classes, counts)}
+        sample_weights = np.array([class_weights[int(lbl)] for lbl in y_train], dtype=np.float32)
+        sampler = torch.utils.data.WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    return train_loader, val_loader
 
 
 def _compute_class_weights(y: np.ndarray) -> Optional[torch.Tensor]:
@@ -159,6 +174,8 @@ def train_one_window(
     hidden_layers: Iterable[int] = (128, 64),
     dropout: float = 0.1,
     lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    use_weighted_sampler: bool = True,
     epochs: int = 20,
     batch_size: int = 64,
     window_id: Optional[int] = None,
@@ -175,9 +192,11 @@ def train_one_window(
     model = ScreentimeMLP(input_dim=X_train.shape[1], hidden_layers=hidden_layers, dropout=dropout).to(device)
     class_weights = _compute_class_weights(y_train)
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(device) if class_weights is not None else None)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    train_loader, val_loader = _make_loaders(X_train, X_val, y_train, y_val, batch_size=batch_size)
+    train_loader, val_loader = _make_loaders(
+        X_train, X_val, y_train, y_val, batch_size=batch_size, use_weighted_sampler=use_weighted_sampler
+    )
 
     train_losses, val_losses = [], []
     cm = None
@@ -273,6 +292,8 @@ def run_experiment(
     propagate_labels: bool = False,
     use_accurate_method: bool = False,
     hidden_layers: Iterable[int] = (128, 64),
+    weight_decay: float = 1e-4,
+    use_weighted_sampler: bool = True,
     epochs: int = 15,
     use_subwindows: bool = False,
     lookback_hours: int = 12,
@@ -303,6 +324,8 @@ def run_experiment(
                 df,
                 target_type=target_type,
                 hidden_layers=hidden_layers,
+                weight_decay=weight_decay,
+                use_weighted_sampler=use_weighted_sampler,
                 epochs=epochs,
                 window_id=window,
             )
@@ -318,6 +341,8 @@ if __name__ == "__main__":
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "false").lower() == "true",
         hidden_layers=(128, 64),
+        weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
+        use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
         epochs=int(os.getenv("EPOCHS", "20")),
         use_subwindows=os.getenv("USE_SUBWINDOWS", "true").lower() == "true",
         lookback_hours=int(os.getenv("LOOKBACK_HOURS", "24")),
