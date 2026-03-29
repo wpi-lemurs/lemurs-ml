@@ -34,10 +34,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.preprocessing import LabelEncoder
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
+import xgboost as xgb
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -354,6 +356,27 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
+        # Train XGBoost model
+        le = LabelEncoder()
+        y_train_enc = le.fit_transform(y_train)
+        y_test_enc = le.transform(y_test)
+
+        xgb_model = xgb.XGBClassifier() # start with default params
+        xgb_model.fit(X_train, y_train_enc)
+        xgb_pred_enc = xgb_model.predict(X_test)
+        xgb_pred = le.inverse_transform(xgb_pred_enc)
+        xgb_acc = accuracy_score(y_test, xgb_pred)
+
+        # Generate confusion matrix with explicit label order
+        xgb_cm = confusion_matrix(y_test, xgb_pred, labels=label_order)
+        results['xgb_confusion_matrix'] = xgb_cm.tolist()
+
+        results['xgb_accuracy'] = xgb_acc
+        try:
+            results['xgb_f1_score'] = f1_score(y_test, xgb_pred, pos_label=positive_class, average='binary')
+        except:
+            results['xgb_f1_score'] = None
+
 
         return results
 
@@ -383,7 +406,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Create figure with subplots for each time window
     n_windows = len(all_results)
-    fig, axes = plt.subplots(n_windows, 3, figsize=(14, 5 * n_windows))
+    fig, axes = plt.subplots(n_windows, 4, figsize=(22, 5 * n_windows))
 
     # Handle case of single time window
     if n_windows == 1:
@@ -424,20 +447,34 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             axes[idx, 1].set_title(title)
             axes[idx, 1].set_ylabel('True Label')
             axes[idx, 1].set_xlabel('Predicted Label')
+
+        # Plot XGBoost confusion matrix
+        if 'xgb_confusion_matrix' in result:
+            xgb_cm = np.array(result['xgb_confusion_matrix'])
+            sns.heatmap(xgb_cm, annot=True, fmt='d', cmap='Purples',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 2], cbar=True)
+            # Build title with F1 score if available
+            title = f'XGBoost - {time_window}h window\nAccuracy: {result["xgb_accuracy"]:.3f}'
+            if 'xgb_f1_score' in result and result['xgb_f1_score'] is not None:
+                title += f' | F1: {result["xgb_f1_score"]:.3f}'
+            axes[idx, 2].set_title(title)
+            axes[idx, 2].set_ylabel('True Label')
+            axes[idx, 2].set_xlabel('Predicted Label')
         
         # Plot Baseline confusion matrix
         if 'baseline_confusion_matrix' in result:
             baseline_cm = np.array(result['baseline_confusion_matrix'])
             sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
                        xticklabels=labels, yticklabels=labels,
-                       ax=axes[idx, 2], cbar=True)
+                       ax=axes[idx, 3], cbar=True)
             # Build title with F1 score if available
             title = f'Baseline - {time_window}h window\nAccuracy: {result["baseline_accuracy"]:.3f}'
             if 'baseline_f1_score' in result and result['baseline_f1_score'] is not None:
                 title += f' | F1: {result["baseline_f1_score"]:.3f}'
-            axes[idx, 2].set_title(title)
-            axes[idx, 2].set_ylabel('True Label')
-            axes[idx, 2].set_xlabel('Predicted Label')
+            axes[idx, 3].set_title(title)
+            axes[idx, 3].set_ylabel('True Label')
+            axes[idx, 3].set_xlabel('Predicted Label')
 
     plt.tight_layout()
 
@@ -452,9 +489,11 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         # Find best performing window by f1 score if available, otherwise by accuracy
         best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_f1_score'] if 'lr_f1_score' in all_results[i] and all_results[i]['lr_f1_score'] is not None else all_results[i]['lr_accuracy'])
         best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_f1_score'] if 'rf_f1_score' in all_results[i] and all_results[i]['rf_f1_score'] is not None else all_results[i]['rf_accuracy'])
+        best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_f1_score'] if 'xgb_f1_score' in all_results[i] and all_results[i]['xgb_f1_score'] is not None else all_results[i]['xgb_accuracy'])
         best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_f1_score'] if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None else all_results[i]['baseline_accuracy'])
 
-        fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
         fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
                      fontsize=16, fontweight='bold')
 
@@ -486,19 +525,33 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         axes[1].set_ylabel('True Label', fontsize=11)
         axes[1].set_xlabel('Predicted Label', fontsize=11)
 
+        # Best XGBoost
+        best_xgb = all_results[best_xgb_idx]
+        xgb_cm = np.array(best_xgb['xgb_confusion_matrix'])
+        sns.heatmap(xgb_cm, annot=True, fmt='d', cmap='Purples',
+                   xticklabels=labels, yticklabels=labels,
+                   ax=axes[2], cbar=True, annot_kws={'size': 14})
+        # Build title with F1 score if available
+        title = f'Best XGBoost\n{best_xgb["time_window"]}h window - Accuracy: {best_xgb["xgb_accuracy"]:.3f}'
+        if 'xgb_f1_score' in best_xgb and best_xgb['xgb_f1_score'] is not None:
+            title += f' | F1: {best_xgb["xgb_f1_score"]:.3f}'
+        axes[2].set_title(title, fontsize=12, fontweight='bold')
+        axes[2].set_ylabel('True Label', fontsize=11)
+        axes[2].set_xlabel('Predicted Label', fontsize=11)
+
         # Best Baseline
         best_baseline = all_results[best_baseline_idx]
         baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
         sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[2], cbar=True, annot_kws={'size': 14})
+                   ax=axes[3], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
         title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
         if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
             title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
-        axes[2].set_title(title, fontsize=12, fontweight='bold')
-        axes[2].set_ylabel('True Label', fontsize=11)
-        axes[2].set_xlabel('Predicted Label', fontsize=11)
+        axes[3].set_title(title, fontsize=12, fontweight='bold')
+        axes[3].set_ylabel('True Label', fontsize=11)
+        axes[3].set_xlabel('Predicted Label', fontsize=11)
 
         plt.tight_layout()
 
@@ -597,15 +650,16 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
 
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
-        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy', 'baseline_accuracy']
+        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'baseline_accuracy']
         if 'lr_f1_score' in comparison_df.columns:
-            display_cols.extend(['lr_f1_score', 'rf_f1_score', 'baseline_f1_score'])
+            display_cols.extend(['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'baseline_f1_score'])
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
         if 'lr_f1_score' in comparison_df.columns and comparison_df['lr_f1_score'].notna().any():
             best_lr_window = comparison_df.loc[comparison_df['lr_f1_score'].idxmax()]
             best_rf_window = comparison_df.loc[comparison_df['rf_f1_score'].idxmax()]
+            best_xgb_window = comparison_df.loc[comparison_df['xgb_f1_score'].idxmax()]
 
             print(f"\n" + "="*80)
             print("BEST PERFORMING TIME WINDOWS")
@@ -620,12 +674,18 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
 
+            print(f"\nXGBoost:")
+            print(f"  Best window: {best_xgb_window['time_window']}h")
+            print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
+            print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
+
             print(f"\nBaseline Model:")
             print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
             print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
         else:
             best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
             best_rf_window = comparison_df.loc[comparison_df['rf_accuracy'].idxmax()]
+            best_xgb_window = comparison_df.loc[comparison_df['xgb_accuracy'].idxmax()]
 
             print(f"\n" + "="*80)
             print("BEST PERFORMING TIME WINDOWS (by accuracy)")
@@ -637,6 +697,10 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"\nRandom Forest:")
             print(f"  Best window: {best_rf_window['time_window']}h")
             print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
+
+            print(f"\nXGBoost:")
+            print(f"  Best window: {best_xgb_window['time_window']}h")
+            print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
 
             print(f"\nBaseline Model:")
             print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
