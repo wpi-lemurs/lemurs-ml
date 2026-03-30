@@ -503,10 +503,10 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "sleep"),
+        target_type=os.getenv("TARGET_TYPE", "social_connection"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
-        use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "false").lower() == "true",
+        use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "true").lower() == "true",
         hidden_layers=(128, 64),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
