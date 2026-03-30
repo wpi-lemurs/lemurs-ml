@@ -168,6 +168,17 @@ def _compute_class_weights(y: np.ndarray) -> Optional[torch.Tensor]:
     return torch.tensor(full_weights, dtype=torch.float32)
 
 
+def _binary_metrics_from_cm(cm: np.ndarray) -> Tuple[float, float]:
+    """Return (sensitivity, specificity) from a 2x2 confusion matrix."""
+    if cm is None or cm.shape != (2, 2):
+        return float("nan"), float("nan")
+
+    tn, fp, fn, tp = cm.ravel()
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    return sensitivity, specificity
+
+
 def train_one_window(
     df,
     target_type: str,
@@ -200,6 +211,8 @@ def train_one_window(
 
     train_losses, val_losses = [], []
     cm = None
+    sensitivity = float("nan")
+    specificity = float("nan")
 
     for epoch in range(epochs):
         model.train()
@@ -234,10 +247,11 @@ def train_one_window(
         acc = accuracy_score(targets, preds)
         f1 = f1_score(targets, preds, zero_division=0)
         cm = confusion_matrix(targets, preds, labels=[0, 1])
+        sensitivity, specificity = _binary_metrics_from_cm(cm)
         print(
             f"Epoch {epoch+1}/{epochs} - "
             f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"acc={acc:.3f} f1={f1:.3f}"
+            f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
         )
 
     if save_plots:
@@ -256,7 +270,13 @@ def train_one_window(
         for (i, j), v in np.ndenumerate(cm):
             ax.text(j, i, str(v), ha="center", va="center", fontsize=9)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        fig.text(0.5, 0.02, f"F1 score: {f1:.3f}", ha="center", fontsize=10)
+        fig.text(
+            0.5,
+            0.02,
+            f"F1: {f1:.3f}   Sensitivity: {sensitivity:.3f}   Specificity: {specificity:.3f}",
+            ha="center",
+            fontsize=10,
+        )
         fig.tight_layout(rect=[0, 0.05, 1, 0.97])
         plt.savefig(os.path.join(plots_dir, f"confusion_matrix_{tag}.png"), dpi=200)
         plt.close(fig)
@@ -280,6 +300,8 @@ def train_one_window(
         "classes": classes,
         "val_accuracy": acc,
         "val_f1": f1,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
         "confusion_matrix": cm,
         "train_losses": train_losses,
         "val_losses": val_losses,
