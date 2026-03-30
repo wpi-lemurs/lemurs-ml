@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import LeaveOneGroupOut, train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -59,14 +59,14 @@ def _select_pipeline(
     )
 
 
-def _prepare_features_labels(df, target_type: str) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
+def _prepare_features_labels(df, target_type: str) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], pd.Index]:
     # Drop rows with missing target
     df = df.copy()
     label_encoder = LabelEncoder(target_type=target_type)
     label_encoder.fit(df)
     label_series = label_encoder.transform(df)
     if label_series is None:
-        return np.array([]), np.array([]), [], []
+        return np.array([]), np.array([]), [], [], pd.Index([])
     df = df.loc[label_series.notna()]
     label_series = label_series.loc[label_series.notna()]
 
@@ -93,15 +93,15 @@ def _prepare_features_labels(df, target_type: str) -> Tuple[np.ndarray, np.ndarr
         print(f"Dropping non-numeric feature columns: {sorted(dropped_cols)}")
 
     if numeric_df.empty:
-        return np.array([]), np.array([]), [], []
+        return np.array([]), np.array([]), [], [], pd.Index([])
 
     numeric_df = numeric_df.fillna(0)
 
     X = numeric_df.to_numpy(dtype=float)
     classes = list(label_encoder.classes_ or [])
     label_map = {cls: idx for idx, cls in enumerate(classes)}
-    y = label_series.map(label_map).to_numpy()
-    return X, y, list(numeric_df.columns), classes
+    y = label_series.map(label_map).to_numpy(dtype=int)
+    return X, y, list(numeric_df.columns), classes, numeric_df.index
 
 
 def _train_val_split(X: np.ndarray, y: np.ndarray, test_size: float = 0.2, scale: bool = True):
@@ -179,6 +179,79 @@ def _binary_metrics_from_cm(cm: np.ndarray) -> Tuple[float, float]:
     return sensitivity, specificity
 
 
+def _train_evaluate_split(
+    X_train,
+    X_val,
+    y_train,
+    y_val,
+    hidden_layers,
+    dropout,
+    lr,
+    weight_decay,
+    use_weighted_sampler,
+    epochs,
+    batch_size,
+    device,
+):
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+
+    model = ScreentimeMLP(input_dim=X_train_scaled.shape[1], hidden_layers=hidden_layers, dropout=dropout).to(device)
+    class_weights = _compute_class_weights(y_train)
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device) if class_weights is not None else None)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    train_loader, val_loader = _make_loaders(
+        X_train_scaled,
+        X_val_scaled,
+        y_train,
+        y_val,
+        batch_size=batch_size,
+        use_weighted_sampler=use_weighted_sampler,
+    )
+
+    train_losses, val_losses = [], []
+    preds, targets = np.array([]), np.array([])
+
+    for _ in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item() * xb.size(0)
+        train_losses.append(epoch_loss / len(train_loader.dataset))
+
+        model.eval()
+        fold_preds, fold_targets = [], []
+        val_loss_sum = 0.0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                val_loss = criterion(logits, yb)
+                val_loss_sum += val_loss.item() * xb.size(0)
+                fold_preds.append(torch.argmax(logits, dim=1).cpu().numpy())
+                fold_targets.append(yb.cpu().numpy())
+        preds = np.concatenate(fold_preds)
+        targets = np.concatenate(fold_targets)
+        val_losses.append(val_loss_sum / len(val_loader.dataset))
+
+    return {
+        "model": model,
+        "scaler": scaler,
+        "preds": preds,
+        "targets": targets,
+        "train_losses": train_losses,
+        "val_losses": val_losses,
+    }
+
+
 def train_one_window(
     df,
     target_type: str,
@@ -192,71 +265,139 @@ def train_one_window(
     window_id: Optional[int] = None,
     save_plots: bool = True,
     plots_dir: str = "data",
+    use_loocv: bool = False,
+    group_col: str = "app_user_id",
 ):
-    X, y, feature_names, classes = _prepare_features_labels(df, target_type)
+    X, y, feature_names, classes, row_index = _prepare_features_labels(df, target_type)
     if X.size == 0 or y.size == 0:
         raise ValueError("No data available after preprocessing")
-    X_train, X_val, y_train, y_val, scaler = _train_val_split(X, y)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
-    model = ScreentimeMLP(input_dim=X_train.shape[1], hidden_layers=hidden_layers, dropout=dropout).to(device)
-    class_weights = _compute_class_weights(y_train)
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device) if class_weights is not None else None)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    train_loader, val_loader = _make_loaders(
-        X_train, X_val, y_train, y_val, batch_size=batch_size, use_weighted_sampler=use_weighted_sampler
-    )
-
+    model = None
+    scaler = None
     train_losses, val_losses = [], []
     cm = None
     sensitivity = float("nan")
     specificity = float("nan")
+    successful_folds = 1
+    acc = float("nan")
+    f1 = float("nan")
 
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0.0
-        for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            logits = model(xb)
-            loss = criterion(logits, yb)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item() * xb.size(0)
-        train_loss = epoch_loss / len(train_loader.dataset)
-        train_losses.append(train_loss)
+    if use_loocv:
+        if group_col not in df.columns:
+            raise ValueError(f"LOOCV requires '{group_col}' column in the input dataframe")
 
-        model.eval()
-        preds, targets = [], []
-        val_loss_sum = 0.0
-        with torch.no_grad():
-            for xb, yb in val_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                logits = model(xb)
-                val_loss = criterion(logits, yb)
-                val_loss_sum += val_loss.item() * xb.size(0)
-                preds.append(torch.argmax(logits, dim=1).cpu().numpy())
-                targets.append(yb.cpu().numpy())
-        preds = np.concatenate(preds)
-        targets = np.concatenate(targets)
-        val_loss = val_loss_sum / len(val_loader.dataset)
-        val_losses.append(val_loss)
+        groups = df.loc[row_index, group_col]
+        valid_group_mask = groups.notna().to_numpy()
+        X_cv = X[valid_group_mask]
+        y_cv = y[valid_group_mask]
+        groups_cv = groups.loc[groups.notna()]
+
+        if len(np.unique(groups_cv)) < 2:
+            raise ValueError("LOOCV requires at least two distinct users/groups")
+
+        logo = LeaveOneGroupOut()
+        all_preds = []
+        all_targets = []
+        fold_train_losses = []
+        fold_val_losses = []
+        successful_folds = 0
+
+        for train_idx, test_idx in logo.split(X_cv, y_cv, groups_cv):
+            y_train_fold = y_cv[train_idx]
+            y_test_fold = y_cv[test_idx]
+
+            if np.unique(y_train_fold).size < 2:
+                continue
+            if y_test_fold.size == 0:
+                continue
+
+            fold_result = _train_evaluate_split(
+                X_train=X_cv[train_idx],
+                X_val=X_cv[test_idx],
+                y_train=y_train_fold,
+                y_val=y_test_fold,
+                hidden_layers=hidden_layers,
+                dropout=dropout,
+                lr=lr,
+                weight_decay=weight_decay,
+                use_weighted_sampler=use_weighted_sampler,
+                epochs=epochs,
+                batch_size=batch_size,
+                device=device,
+            )
+
+            successful_folds += 1
+            model = fold_result["model"]
+            scaler = fold_result["scaler"]
+            all_preds.append(fold_result["preds"])
+            all_targets.append(fold_result["targets"])
+            fold_train_losses.append(fold_result["train_losses"])
+            fold_val_losses.append(fold_result["val_losses"])
+
+            fold_acc = accuracy_score(fold_result["targets"], fold_result["preds"])
+            fold_f1 = f1_score(fold_result["targets"], fold_result["preds"], zero_division=0)
+            print(
+                f"LOOCV fold {successful_folds} - "
+                f"acc={fold_acc:.3f} f1={fold_f1:.3f}"
+            )
+
+        if successful_folds == 0:
+            raise ValueError("No valid LOOCV folds were available for training")
+
+        preds = np.concatenate(all_preds)
+        targets = np.concatenate(all_targets)
+        acc = accuracy_score(targets, preds)
+        f1 = f1_score(targets, preds, zero_division=0)
+        cm = confusion_matrix(targets, preds, labels=[0, 1])
+        sensitivity, specificity = _binary_metrics_from_cm(cm)
+
+        train_losses = np.mean(np.asarray(fold_train_losses), axis=0).tolist()
+        val_losses = np.mean(np.asarray(fold_val_losses), axis=0).tolist()
+        print(
+            f"LOOCV aggregate - acc={acc:.3f} f1={f1:.3f} "
+            f"sens={sensitivity:.3f} spec={specificity:.3f} folds={successful_folds}"
+        )
+    else:
+        X_train, X_val, y_train, y_val, _ = _train_val_split(X, y)
+        split_result = _train_evaluate_split(
+            X_train=X_train,
+            X_val=X_val,
+            y_train=y_train,
+            y_val=y_val,
+            hidden_layers=hidden_layers,
+            dropout=dropout,
+            lr=lr,
+            weight_decay=weight_decay,
+            use_weighted_sampler=use_weighted_sampler,
+            epochs=epochs,
+            batch_size=batch_size,
+            device=device,
+        )
+
+        model = split_result["model"]
+        scaler = split_result["scaler"]
+        train_losses = split_result["train_losses"]
+        val_losses = split_result["val_losses"]
+        preds = split_result["preds"]
+        targets = split_result["targets"]
 
         acc = accuracy_score(targets, preds)
         f1 = f1_score(targets, preds, zero_division=0)
         cm = confusion_matrix(targets, preds, labels=[0, 1])
         sensitivity, specificity = _binary_metrics_from_cm(cm)
-        print(
-            f"Epoch {epoch+1}/{epochs} - "
-            f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
-        )
+        for epoch, (train_loss, val_loss) in enumerate(zip(train_losses, val_losses), start=1):
+            print(
+                f"Epoch {epoch}/{epochs} - "
+                f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+                f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
+            )
 
     if save_plots:
         os.makedirs(plots_dir, exist_ok=True)
-        tag = f"{target_type}_{window_id if window_id is not None else 'val'}"
+        loocv_suffix = "_loocv" if use_loocv else ""
+        tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
         # Confusion matrix plot
         fig, ax = plt.subplots(figsize=(5, 4))
         im = ax.imshow(cm, cmap="Blues")
@@ -302,6 +443,8 @@ def train_one_window(
         "val_f1": f1,
         "sensitivity": sensitivity,
         "specificity": specificity,
+        "use_loocv": use_loocv,
+        "successful_folds": successful_folds,
         "confusion_matrix": cm,
         "train_losses": train_losses,
         "val_losses": val_losses,
@@ -321,6 +464,7 @@ def run_experiment(
     lookback_hours: int = 12,
     subwindow_hours: int = 3,
     standardized: bool = True,
+    use_loocv: bool = False,
 ):
     pipeline = _select_pipeline(
         target_type,
@@ -350,6 +494,7 @@ def run_experiment(
                 use_weighted_sampler=use_weighted_sampler,
                 epochs=epochs,
                 window_id=window,
+                use_loocv=use_loocv,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Window {window}h failed: {exc}")
@@ -358,7 +503,7 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "social_connection"),
+        target_type=os.getenv("TARGET_TYPE", "sleep"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "false").lower() == "true",
@@ -370,4 +515,5 @@ if __name__ == "__main__":
         lookback_hours=int(os.getenv("LOOKBACK_HOURS", "24")),
         subwindow_hours=int(os.getenv("SUBWINDOW_HOURS", "3")),
         standardized=os.getenv("STANDARDIZED", "true").lower() == "true",
+        use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
     )
