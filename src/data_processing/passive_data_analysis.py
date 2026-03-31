@@ -150,13 +150,14 @@ def clean_overlapping_screentime_sessions(df):
     df = df.sort_values(['app_user_id', 'calculated_start_time'])
     for user_id, user_df in df.groupby('app_user_id'):
         # check for overlapping sessions
-        user_df = user_df.sort_values('calculated_start_time')
+        user_df = user_df.sort_values('calculated_start_time').copy()
         user_df['prev_end_time'] = user_df['last_time_used'].shift(1)
-        
+
         # if first row's start time is before session start time, then the row's start time is actually the end time and the end time is actually totaltimes later
         if user_df['calculated_start_time'].iloc[0] < user_df['start_time'].iloc[0] and user_df['last_time_used'].iloc[0] < pd.to_datetime('2026-02-26'):
-            user_df['calculated_start_time'].iloc[0] = user_df['last_time_used'].iloc[0]
-            user_df['last_time_used'].iloc[0] = user_df['last_time_used'].iloc[0] + pd.to_timedelta(user_df['total_time_seconds'].iloc[0], unit='s')
+            first_idx = user_df.index[0]
+            user_df.loc[first_idx, 'calculated_start_time'] = user_df.loc[first_idx, 'last_time_used']
+            user_df.loc[first_idx, 'last_time_used'] = user_df.loc[first_idx, 'last_time_used'] + pd.to_timedelta(user_df.loc[first_idx, 'total_time_seconds'], unit='s')
             user_df = user_df.sort_values('calculated_start_time')
 
         # update time columns in main df
@@ -572,8 +573,7 @@ def daily_health_with_week(steps_df=steps_data, speed_df=speed_data, distance_df
     result = _merge_health_dataframes(dataframes_with_names, merge_cols)
 
     if result is None:
-        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index',
-                                    'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed'])
+        return pd.DataFrame(columns=['app_user_id', 'date', 'week_start', 'day_index', 'daily_steps', 'daily_distance', 'daily_calories', 'daily_avg_speed'])
 
     # Convert date to datetime and add week metadata
     result['date'] = pd.to_datetime(result['date'])
