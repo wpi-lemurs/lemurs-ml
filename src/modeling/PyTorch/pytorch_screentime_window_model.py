@@ -1,5 +1,6 @@
 import os
 import random
+from copy import deepcopy
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -179,11 +180,25 @@ def _binary_metrics_from_cm(cm: np.ndarray) -> Tuple[float, float]:
     return sensitivity, specificity
 
 
+def _mean_variable_length_sequences(sequences: List[List[float]]) -> List[float]:
+    """Compute element-wise mean for variable-length sequences using NaN padding."""
+    valid = [seq for seq in sequences if seq]
+    if not valid:
+        return []
+
+    max_len = max(len(seq) for seq in valid)
+    padded = np.full((len(valid), max_len), np.nan, dtype=float)
+    for i, seq in enumerate(valid):
+        padded[i, : len(seq)] = seq
+
+    return np.nanmean(padded, axis=0).tolist()
+
+
 def _train_evaluate_split(
     X_train,
-    X_val,
+    X_eval,
     y_train,
-    y_val,
+    y_eval,
     hidden_layers,
     dropout,
     lr,
@@ -192,10 +207,20 @@ def _train_evaluate_split(
     epochs,
     batch_size,
     device,
+    X_early_stop=None,
+    y_early_stop=None,
+    early_stopping_patience: int = 5,
+    early_stopping_min_delta: float = 1e-4,
+    min_epochs: int = 5,
 ):
+    if X_early_stop is None:
+        X_early_stop = X_eval
+        y_early_stop = y_eval
+
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
+    X_eval_scaled = scaler.transform(X_eval)
+    X_early_stop_scaled = scaler.transform(X_early_stop)
 
     model = ScreentimeMLP(input_dim=X_train_scaled.shape[1], hidden_layers=hidden_layers, dropout=dropout).to(device)
     class_weights = _compute_class_weights(y_train)
@@ -204,17 +229,21 @@ def _train_evaluate_split(
 
     train_loader, val_loader = _make_loaders(
         X_train_scaled,
-        X_val_scaled,
+        X_early_stop_scaled,
         y_train,
-        y_val,
+        y_early_stop,
         batch_size=batch_size,
         use_weighted_sampler=use_weighted_sampler,
     )
 
     train_losses, val_losses = [], []
-    preds, targets = np.array([]), np.array([])
+    best_val_loss = float("inf")
+    best_epoch = 0
+    no_improve_count = 0
+    stopped_early = False
+    best_state = deepcopy(model.state_dict())
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
         for xb, yb in train_loader:
@@ -228,7 +257,6 @@ def _train_evaluate_split(
         train_losses.append(epoch_loss / len(train_loader.dataset))
 
         model.eval()
-        fold_preds, fold_targets = [], []
         val_loss_sum = 0.0
         with torch.no_grad():
             for xb, yb in val_loader:
@@ -236,11 +264,38 @@ def _train_evaluate_split(
                 logits = model(xb)
                 val_loss = criterion(logits, yb)
                 val_loss_sum += val_loss.item() * xb.size(0)
-                fold_preds.append(torch.argmax(logits, dim=1).cpu().numpy())
-                fold_targets.append(yb.cpu().numpy())
-        preds = np.concatenate(fold_preds)
-        targets = np.concatenate(fold_targets)
-        val_losses.append(val_loss_sum / len(val_loader.dataset))
+        current_val_loss = val_loss_sum / len(val_loader.dataset)
+        val_losses.append(current_val_loss)
+
+        improved = current_val_loss < (best_val_loss - early_stopping_min_delta)
+        if improved:
+            best_val_loss = current_val_loss
+            best_epoch = epoch + 1
+            no_improve_count = 0
+            best_state = deepcopy(model.state_dict())
+        else:
+            no_improve_count += 1
+
+        can_stop = early_stopping_patience and early_stopping_patience > 0
+        if can_stop and (epoch + 1) >= max(1, min_epochs) and no_improve_count >= early_stopping_patience:
+            stopped_early = True
+            break
+
+    model.load_state_dict(best_state)
+
+    eval_ds = TensorDataset(torch.tensor(X_eval_scaled, dtype=torch.float32), torch.tensor(y_eval, dtype=torch.long))
+    eval_loader = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
+    model.eval()
+    eval_preds, eval_targets = [], []
+    with torch.no_grad():
+        for xb, yb in eval_loader:
+            xb = xb.to(device)
+            logits = model(xb)
+            eval_preds.append(torch.argmax(logits, dim=1).cpu().numpy())
+            eval_targets.append(yb.numpy())
+
+    preds = np.concatenate(eval_preds)
+    targets = np.concatenate(eval_targets)
 
     return {
         "model": model,
@@ -249,6 +304,10 @@ def _train_evaluate_split(
         "targets": targets,
         "train_losses": train_losses,
         "val_losses": val_losses,
+        "best_epoch": best_epoch,
+        "epochs_ran": len(train_losses),
+        "stopped_early": stopped_early,
+        "best_val_loss": best_val_loss,
     }
 
 
@@ -267,6 +326,10 @@ def train_one_window(
     plots_dir: str = "data",
     use_loocv: bool = False,
     group_col: str = "app_user_id",
+    inner_val_size: float = 0.2,
+    early_stopping_patience: int = 5,
+    early_stopping_min_delta: float = 1e-4,
+    min_epochs: int = 5,
 ):
     X, y, feature_names, classes, row_index = _prepare_features_labels(df, target_type)
     if X.size == 0 or y.size == 0:
@@ -283,6 +346,9 @@ def train_one_window(
     successful_folds = 1
     acc = float("nan")
     f1 = float("nan")
+    best_epoch = 0
+    epochs_ran = 0
+    stopped_early = False
 
     if use_loocv:
         if group_col not in df.columns:
@@ -302,10 +368,15 @@ def train_one_window(
         all_targets = []
         fold_train_losses = []
         fold_val_losses = []
+        fold_best_epochs = []
+        fold_epochs_ran = []
+        fold_stopped_early = []
         successful_folds = 0
 
         for train_idx, test_idx in logo.split(X_cv, y_cv, groups_cv):
+            X_train_fold = X_cv[train_idx]
             y_train_fold = y_cv[train_idx]
+            X_test_fold = X_cv[test_idx]
             y_test_fold = y_cv[test_idx]
 
             if np.unique(y_train_fold).size < 2:
@@ -313,11 +384,35 @@ def train_one_window(
             if y_test_fold.size == 0:
                 continue
 
+            stratify_labels = y_train_fold if np.unique(y_train_fold).size > 1 else None
+            try:
+                X_inner_train, X_inner_val, y_inner_train, y_inner_val = train_test_split(
+                    X_train_fold,
+                    y_train_fold,
+                    test_size=inner_val_size,
+                    random_state=42,
+                    stratify=stratify_labels,
+                )
+            except ValueError:
+                try:
+                    X_inner_train, X_inner_val, y_inner_train, y_inner_val = train_test_split(
+                        X_train_fold,
+                        y_train_fold,
+                        test_size=inner_val_size,
+                        random_state=42,
+                        stratify=None,
+                    )
+                except ValueError:
+                    continue
+
+            if np.unique(y_inner_train).size < 2 or len(y_inner_val) == 0:
+                continue
+
             fold_result = _train_evaluate_split(
-                X_train=X_cv[train_idx],
-                X_val=X_cv[test_idx],
-                y_train=y_train_fold,
-                y_val=y_test_fold,
+                X_train=X_inner_train,
+                X_eval=X_test_fold,
+                y_train=y_inner_train,
+                y_eval=y_test_fold,
                 hidden_layers=hidden_layers,
                 dropout=dropout,
                 lr=lr,
@@ -326,6 +421,11 @@ def train_one_window(
                 epochs=epochs,
                 batch_size=batch_size,
                 device=device,
+                X_early_stop=X_inner_val,
+                y_early_stop=y_inner_val,
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_min_delta=early_stopping_min_delta,
+                min_epochs=min_epochs,
             )
 
             successful_folds += 1
@@ -335,12 +435,16 @@ def train_one_window(
             all_targets.append(fold_result["targets"])
             fold_train_losses.append(fold_result["train_losses"])
             fold_val_losses.append(fold_result["val_losses"])
+            fold_best_epochs.append(fold_result["best_epoch"])
+            fold_epochs_ran.append(fold_result["epochs_ran"])
+            fold_stopped_early.append(fold_result["stopped_early"])
 
             fold_acc = accuracy_score(fold_result["targets"], fold_result["preds"])
             fold_f1 = f1_score(fold_result["targets"], fold_result["preds"], zero_division=0)
             print(
                 f"LOOCV fold {successful_folds} - "
-                f"acc={fold_acc:.3f} f1={fold_f1:.3f}"
+                f"acc={fold_acc:.3f} f1={fold_f1:.3f} "
+                f"best_epoch={fold_result['best_epoch']} ran={fold_result['epochs_ran']}"
             )
 
         if successful_folds == 0:
@@ -353,19 +457,23 @@ def train_one_window(
         cm = confusion_matrix(targets, preds, labels=[0, 1])
         sensitivity, specificity = _binary_metrics_from_cm(cm)
 
-        train_losses = np.mean(np.asarray(fold_train_losses), axis=0).tolist()
-        val_losses = np.mean(np.asarray(fold_val_losses), axis=0).tolist()
+        train_losses = _mean_variable_length_sequences(fold_train_losses)
+        val_losses = _mean_variable_length_sequences(fold_val_losses)
+        best_epoch = int(round(float(np.mean(fold_best_epochs)))) if fold_best_epochs else 0
+        epochs_ran = int(round(float(np.mean(fold_epochs_ran)))) if fold_epochs_ran else 0
+        stopped_early = bool(np.any(fold_stopped_early))
         print(
             f"LOOCV aggregate - acc={acc:.3f} f1={f1:.3f} "
-            f"sens={sensitivity:.3f} spec={specificity:.3f} folds={successful_folds}"
+            f"sens={sensitivity:.3f} spec={specificity:.3f} folds={successful_folds} "
+            f"avg_best_epoch={best_epoch} avg_epochs_ran={epochs_ran}"
         )
     else:
         X_train, X_val, y_train, y_val, _ = _train_val_split(X, y)
         split_result = _train_evaluate_split(
             X_train=X_train,
-            X_val=X_val,
+            X_eval=X_val,
             y_train=y_train,
-            y_val=y_val,
+            y_eval=y_val,
             hidden_layers=hidden_layers,
             dropout=dropout,
             lr=lr,
@@ -374,6 +482,11 @@ def train_one_window(
             epochs=epochs,
             batch_size=batch_size,
             device=device,
+            X_early_stop=X_val,
+            y_early_stop=y_val,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            min_epochs=min_epochs,
         )
 
         model = split_result["model"]
@@ -382,6 +495,9 @@ def train_one_window(
         val_losses = split_result["val_losses"]
         preds = split_result["preds"]
         targets = split_result["targets"]
+        best_epoch = split_result["best_epoch"]
+        epochs_ran = split_result["epochs_ran"]
+        stopped_early = split_result["stopped_early"]
 
         acc = accuracy_score(targets, preds)
         f1 = f1_score(targets, preds, zero_division=0)
@@ -389,10 +505,13 @@ def train_one_window(
         sensitivity, specificity = _binary_metrics_from_cm(cm)
         for epoch, (train_loss, val_loss) in enumerate(zip(train_losses, val_losses), start=1):
             print(
-                f"Epoch {epoch}/{epochs} - "
+                f"Epoch {epoch}/{epochs_ran} - "
                 f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
                 f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
             )
+        print(
+            f"Early stopping - best_epoch={best_epoch} epochs_ran={epochs_ran} stopped_early={stopped_early}"
+        )
 
     if save_plots:
         os.makedirs(plots_dir, exist_ok=True)
@@ -445,6 +564,9 @@ def train_one_window(
         "specificity": specificity,
         "use_loocv": use_loocv,
         "successful_folds": successful_folds,
+        "best_epoch": best_epoch,
+        "epochs_ran": epochs_ran,
+        "stopped_early": stopped_early,
         "confusion_matrix": cm,
         "train_losses": train_losses,
         "val_losses": val_losses,
@@ -465,6 +587,10 @@ def run_experiment(
     subwindow_hours: int = 3,
     standardized: bool = True,
     use_loocv: bool = False,
+    inner_val_size: float = 0.2,
+    early_stopping_patience: int = 5,
+    early_stopping_min_delta: float = 1e-4,
+    min_epochs: int = 5,
 ):
     pipeline = _select_pipeline(
         target_type,
@@ -495,6 +621,10 @@ def run_experiment(
                 epochs=epochs,
                 window_id=window,
                 use_loocv=use_loocv,
+                inner_val_size=inner_val_size,
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_min_delta=early_stopping_min_delta,
+                min_epochs=min_epochs,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Window {window}h failed: {exc}")
@@ -516,4 +646,8 @@ if __name__ == "__main__":
         subwindow_hours=int(os.getenv("SUBWINDOW_HOURS", "3")),
         standardized=os.getenv("STANDARDIZED", "true").lower() == "true",
         use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
+        inner_val_size=float(os.getenv("INNER_VAL_SIZE", "0.2")),
+        early_stopping_patience=int(os.getenv("EARLY_STOPPING_PATIENCE", "5")),
+        early_stopping_min_delta=float(os.getenv("EARLY_STOPPING_MIN_DELTA", "0.0001")),
+        min_epochs=int(os.getenv("MIN_EPOCHS", "5")),
     )
