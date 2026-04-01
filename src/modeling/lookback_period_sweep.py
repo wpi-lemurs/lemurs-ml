@@ -14,14 +14,19 @@ Results are visualized as:
 - Subwindow comparison – F1 vs subwindow size for selected lookbacks
 - Summary table – top-10 configurations by F1
 
+Supports all daily labels:
+- suicide_risk, self_harm, positive_emotion, negative_emotion
+- social_stress, social_connection, minority_stress
+- emotion_regulation, sleep, phq9 (depression)
+
 Usage:
     python src/modeling/lookback_period_sweep.py
 
 Configuration:
     Edit the constants at the top of the main() function to change:
-    - TARGET_TYPE: 'suicide_risk', 'self_harm', 'sleep', or 'phq9'
+    - TARGET_TYPE: 'social_connection', 'negative_emotion', etc.
     - MAX_LOOKBACK: maximum lookback period in hours (default: 30)
-    - PROPAGATE_LABELS: whether to propagate positive labels (default: True)
+    - PROPAGATE_LABELS: whether to propagate positive labels (default: False)
     - BALANCED_WEIGHT: use balanced class weights (default: False)
     - USE_LOOCV: leave-one-user-out CV (disabled for sweep - too slow)
 
@@ -52,265 +57,286 @@ from src.pipeline.transformers import ScreentimeAppCategorizer
 from src.pipeline.mental_health_pipeline import create_subwindow_pipeline
 from src.config import DATA_DIR
 
+# Available daily labels and their target columns
+AVAILABLE_LABELS = {
+    'suicide_risk': 'suicide_risk_label',
+    'self_harm': 'self_harm_risk_label',
+    'positive_emotion': 'positive_emotion_label',
+    'negative_emotion': 'negative_emotion_label',
+    'social_stress': 'social_stress_label',
+    'social_connection': 'social_connection_label',
+    'minority_stress': 'minority_stress_label',
+    'emotion_regulation': 'emotion_regulation_label',
+    'sleep': 'sleep_label',
+    'phq9': 'severity_label'  # PHQ-9 depression
+}
+
+POSITIVE_CLASS_MAP = {
+    'phq9': 'depressed',
+    'suicide_risk': 'at_risk',
+    'self_harm': 'at_risk',
+    'positive_emotion': 'at_risk',
+    'negative_emotion': 'at_risk',
+    'social_stress': 'at_risk',
+    'social_connection': 'at_risk',
+    'minority_stress': 'at_risk',
+    'emotion_regulation': 'at_risk',
+    'sleep': 'at_risk'
+}
+
 
 def get_subwindow_sizes(lookback: int) -> list:
-    """
-    Return all divisors of lookback in descending order.
+	"""
+	Return all divisors of lookback in descending order.
 
-    These are the valid subwindow sizes for a given lookback period.
-    For example, lookback=12 returns [12, 6, 4, 3, 2, 1].
+	These are the valid subwindow sizes for a given lookback period.
+	For example, lookback=12 returns [12, 6, 4, 3, 2, 1].
 
-    Parameters:
-    -----------
-    lookback : int
-        Lookback period in hours
+	Parameters:
+	-----------
+	lookback : int
+		Lookback period in hours
 
-    Returns:
-    --------
-    list : Valid subwindow sizes in descending order
-    """
-    return sorted(
-        [sw for sw in range(1, lookback + 1) if lookback % sw == 0],
-        reverse=True,
-    )
+	Returns:
+	--------
+	list : Valid subwindow sizes in descending order
+	"""
+	return sorted(
+		[sw for sw in range(1, lookback + 1) if lookback % sw == 0],
+		reverse=True,
+	)
 
 
 def run_sweep(
-    target_type: str,
-    max_lookback: int,
-    propagate_labels: bool = True,
-    balanced_weight: bool = False,
-    use_loocv: bool = False,
+	target_type: str,
+	max_lookback: int,
+	propagate_labels: bool = True,
+	balanced_weight: bool = False,
+	use_loocv: bool = False,
 ) -> pd.DataFrame:
-    """
-    Run the lookback period sweep with optimized categorization.
+	"""
+	Run the lookback period sweep with optimized categorization.
 
-    OPTIMIZATION: Categorizes apps ONCE at the beginning, then reuses the
-    categorized data for all (lookback, subwindow) combinations. This makes
-    the sweep dramatically faster!
+	OPTIMIZATION: Categorizes apps ONCE at the beginning, then reuses the
+	categorized data for all (lookback, subwindow) combinations. This makes
+	the sweep dramatically faster!
 
-    For every (lookback, subwindow) pair, creates features using the pre-categorized
-    data and trains models, recording F1 score and accuracy for each model.
+	For every (lookback, subwindow) pair, creates features using the pre-categorized
+	data and trains models, recording F1 score and accuracy for each model.
 
-    Parameters:
-    -----------
-    target_type : str
-        Target to predict: 'suicide_risk', 'self_harm', 'sleep', or 'phq9'
-    max_lookback : int
-        Maximum lookback period in hours
-    propagate_labels : bool, default=True
-        Whether to propagate positive labels across a user
-    balanced_weight : bool, default=False
-        Whether to use balanced class weights
-    use_loocv : bool, default=False
-        Whether to use leave-one-user-out cross-validation
+	Parameters:
+	-----------
+	target_type : str
+		Target to predict (key from AVAILABLE_LABELS)
+	max_lookback : int
+		Maximum lookback period in hours
+	propagate_labels : bool, default=True
+		Whether to propagate positive labels across a user
+	balanced_weight : bool, default=False
+		Whether to use balanced class weights
+	use_loocv : bool, default=False
+		Whether to use leave-one-user-out cross-validation
 
-    Returns:
-    --------
-    pd.DataFrame : Results with columns [lookback, subwindow, model, f1_score, accuracy, n_samples]
-    """
-    records = []
+	Returns:
+	--------
+	pd.DataFrame : Results with columns [lookback, subwindow, model, f1_score, accuracy, n_samples]
+	"""
+	if target_type not in AVAILABLE_LABELS:
+		raise ValueError(f"Invalid target_type. Choose from: {list(AVAILABLE_LABELS.keys())}")
 
-    lookbacks = list(range(1, max_lookback + 1))
-    total_combinations = sum(len(get_subwindow_sizes(lb)) for lb in lookbacks)
+	records = []
 
-    print(f'\n{"=" * 80}')
-    print(f'STARTING OPTIMIZED LOOKBACK SWEEP')
-    print(f'{"=" * 80}')
-    print(f'Target type      : {target_type}')
-    print(f'Max lookback     : {max_lookback} h')
-    print(f'Propagate labels : {propagate_labels}')
-    print(f'Balanced weights : {balanced_weight}')
-    print(f'LOOCV            : {use_loocv}')
-    print(f'Total combos     : {total_combinations}')
-    print(f'{"=" * 80}\n')
+	lookbacks = list(range(1, max_lookback + 1))
+	total_combinations = sum(len(get_subwindow_sizes(lb)) for lb in lookbacks)
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 1: CATEGORIZE APPS ONCE (this is the slow part)
-    # ═══════════════════════════════════════════════════════════════════════
-    print("STEP 1: Categorizing apps...")
-    print("-" * 80)
+	print(f'\n{"=" * 80}')
+	print(f'STARTING OPTIMIZED LOOKBACK SWEEP')
+	print(f'{"=" * 80}')
+	print(f'Target type      : {target_type}')
+	print(f'Label column     : {AVAILABLE_LABELS[target_type]}')
+	print(f'Positive class   : {POSITIVE_CLASS_MAP[target_type]}')
+	print(f'Max lookback     : {max_lookback} h')
+	print(f'Propagate labels : {propagate_labels}')
+	print(f'Balanced weights : {balanced_weight}')
+	print(f'LOOCV            : {use_loocv}')
+	print(f'Total combos     : {total_combinations}')
+	print(f'{"=" * 80}\n')
 
-    categorizer = ScreentimeAppCategorizer()
-    categorizer.fit(None)  # This does the expensive categorization
-    categorized_data = categorizer.transform(None)
+	# ═══════════════════════════════════════════════════════════════════════
+	# STEP 1: CATEGORIZE APPS ONCE (this is the slow part)
+	# ═══════════════════════════════════════════════════════════════════════
+	print("STEP 1: Categorizing apps...")
+	print("-" * 80)
 
-    print(f"[OK] Categorization complete! Now running {total_combinations} experiments...\n")
+	categorizer = ScreentimeAppCategorizer()
+	categorizer.fit(None)  # This does the expensive categorization
+	categorized_data = categorizer.transform(None)
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 2: RUN EXPERIMENTS REUSING CATEGORIZED DATA (fast!)
-    # ═══════════════════════════════════════════════════════════════════════
-    done = 0
+	print(f"[OK] Categorization complete! Now running {total_combinations} experiments...\n")
 
-    for lookback in lookbacks:
-        for subwindow in get_subwindow_sizes(lookback):
-            done += 1
-            print(f'[{done}/{total_combinations}]  lookback={lookback:2d}h  subwindow={subwindow:2d}h', end='  ')
+	# ═══════════════════════════════════════════════════════════════════════
+	# STEP 2: RUN EXPERIMENTS REUSING CATEGORIZED DATA (fast!)
+	# ═══════════════════════════════════════════════════════════════════════
+	done = 0
 
-            try:
-                # Create a pipeline for this specific configuration
-                # The categorized_data will be passed through the pipeline
-                pipeline = create_subwindow_pipeline(
-                    target_type=target_type,
-                    lookback_hours=lookback,
-                    subwindow_hours=subwindow,
-                    propagate_labels=propagate_labels,
-                    use_accurate_method=True,
-                    standardized=False
-                )
+	for lookback in lookbacks:
+		for subwindow in get_subwindow_sizes(lookback):
+			done += 1
+			print(f'[{done}/{total_combinations}]  lookback={lookback:2d}h  subwindow={subwindow:2d}h', end='  ')
 
-                # Fit the pipeline (but categorization is skipped since data is pre-categorized)
-                # The ScreentimeAppCategorizer step will use the cached data
-                pipeline.named_steps['categorize_apps'].categorized_data_ = categorized_data
+			try:
+				# Create a pipeline for this specific configuration
+				# The categorized_data will be passed through the pipeline
+				pipeline = create_subwindow_pipeline(
+					target_type=target_type,
+					lookback_hours=lookback,
+					subwindow_hours=subwindow,
+					propagate_labels=propagate_labels,
+					use_accurate_method=True,
+					standardized=False
+				)
 
-                # Transform to get features (fast - uses pre-categorized data)
-                processed_data = pipeline.transform(categorized_data)
+				# Fit the pipeline (but categorization is skipped since data is pre-categorized)
+				# The ScreentimeAppCategorizer step will use the cached data
+				pipeline.named_steps['categorize_apps'].categorized_data_ = categorized_data
 
-                if not processed_data or (isinstance(processed_data, dict) and not processed_data):
-                    print('→ no data')
-                    continue
+				# Transform to get features (fast - uses pre-categorized data)
+				processed_data = pipeline.transform(categorized_data)
 
-                # Now train models on the processed data
-                from sklearn.model_selection import train_test_split, LeaveOneGroupOut
-                from sklearn.preprocessing import StandardScaler
-                from sklearn.linear_model import LogisticRegression
-                from sklearn.ensemble import RandomForestClassifier
-                from sklearn.metrics import f1_score, accuracy_score
+				if not processed_data or (isinstance(processed_data, dict) and not processed_data):
+					print('→ no data')
+					continue
 
-                # Get the dataframe from the dict
-                df = processed_data[lookback]
+				# Now train models on the processed data
+				from sklearn.model_selection import train_test_split, LeaveOneGroupOut
+				from sklearn.preprocessing import StandardScaler
+				from sklearn.linear_model import LogisticRegression
+				from sklearn.ensemble import RandomForestClassifier
+				from sklearn.metrics import f1_score, accuracy_score
 
-                if df.empty:
-                    print('→ empty dataframe')
-                    continue
+				# Get the dataframe from the dict
+				df = processed_data[lookback]
 
-                # Determine label column
-                if target_type == 'phq9':
-                    label_col = 'severity_label'
-                    positive_class = 'depressed'
-                else:
-                    label_col_map = {
-                        'suicide_risk': 'suicide_risk_label',
-                        'self_harm': 'self_harm_risk_label',
-                        'sleep': 'sleep_label',
-                        'negative_emotions': 'negative_emotion_label',
-                        'social_connection': 'social_connection_label'
-                    }
-                    label_col = label_col_map[target_type]
-                    positive_class = 'at_risk'
+				if df.empty:
+					print('→ empty dataframe')
+					continue
 
-                # Filter out N/A for sleep
-                if target_type == 'sleep':
-                    df = df[df[label_col] != 'N/A'].copy()
+				# Get label column and positive class for this target
+				label_col = AVAILABLE_LABELS[target_type]
+				positive_class = POSITIVE_CLASS_MAP[target_type]
 
-                # Check if we have data and both classes
-                if df.empty or df[label_col].nunique() < 2:
-                    print('→ insufficient data')
-                    continue
+				# Filter out N/A for sleep
+				if target_type == 'sleep':
+					df = df[df[label_col] != 'N/A'].copy()
 
-                # Prepare features and labels
-                exclude_cols = [
-                    'app_user_id', 'survey_response_id', 'timestamp', 'survey_timestamp',
-                    'week_start', 'time_key', 'date', 'phq9_response_id',
-                    label_col, 'phq9_total_score'
-                ]
+				# Check if we have data and both classes
+				if df.empty or df[label_col].nunique() < 2:
+					print('→ insufficient data')
+					continue
 
-                # Also exclude datetime columns
-                datetime_cols = df.select_dtypes(include=['datetime64', 'datetime']).columns.tolist()
-                exclude_cols.extend(datetime_cols)
-                exclude_cols = list(set(exclude_cols))
+				# Prepare features and labels
+				exclude_cols = [
+					'app_user_id', 'survey_response_id', 'timestamp', 'survey_timestamp',
+					'week_start', 'time_key', 'date', 'phq9_response_id',
+					label_col, 'phq9_total_score'
+				]
 
-                feature_cols = [col for col in df.columns if col not in exclude_cols]
+				# Also exclude datetime columns
+				datetime_cols = df.select_dtypes(include=['datetime64', 'datetime']).columns.tolist()
+				exclude_cols.extend(datetime_cols)
+				exclude_cols = list(set(exclude_cols))
 
-                if not feature_cols:
-                    print('→ no features')
-                    continue
+				feature_cols = [col for col in df.columns if col not in exclude_cols]
 
-                X = df[feature_cols].copy()
+				if not feature_cols:
+					print('→ no features')
+					continue
 
-                # One-hot encode categorical columns
-                non_numeric_cols = X.select_dtypes(exclude=['number']).columns.tolist()
-                if non_numeric_cols:
-                    X = pd.get_dummies(X, columns=non_numeric_cols, drop_first=True, dummy_na=False)
-                    bool_cols = X.select_dtypes(include=['bool']).columns
-                    X[bool_cols] = X[bool_cols].astype(int)
+				X = df[feature_cols].copy()
 
-                X = X.fillna(0)
-                y = df[label_col]
+				# One-hot encode categorical columns
+				non_numeric_cols = X.select_dtypes(exclude=['number']).columns.tolist()
+				if non_numeric_cols:
+					X = pd.get_dummies(X, columns=non_numeric_cols, drop_first=True, dummy_na=False)
+					bool_cols = X.select_dtypes(include=['bool']).columns
+					X[bool_cols] = X[bool_cols].astype(int)
 
-                # Check minimum samples per class
-                class_counts = y.value_counts()
-                if class_counts.min() < 2:
-                    print('→ too few samples per class')
-                    continue
+				X = X.fillna(0)
+				y = df[label_col]
 
-                n_samples = len(df)
+				# Check minimum samples per class
+				class_counts = y.value_counts()
+				if class_counts.min() < 2:
+					print('→ too few samples per class')
+					continue
 
-                # Train models
-                class_weight = 'balanced' if balanced_weight else None
+				n_samples = len(df)
 
-                models = {
-                    'logistic_regression': LogisticRegression(
-                        max_iter=10000, random_state=42, class_weight=class_weight, solver='lbfgs'
-                    ),
-                    'random_forest': RandomForestClassifier(
-                        n_estimators=100, random_state=42, class_weight=class_weight
-                    )
-                }
+				# Train models
+				class_weight = 'balanced' if balanced_weight else None
 
-                # Simple train/test split for speed (LOOCV would be too slow for sweep)
-                try:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=0.3, random_state=42, stratify=y
-                    )
-                except:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=0.3, random_state=42
-                    )
+				models = {
+					'logistic_regression': LogisticRegression(
+						max_iter=10000, random_state=42, class_weight=class_weight, solver='lbfgs'
+					),
+					'random_forest': RandomForestClassifier(
+						n_estimators=100, random_state=42, class_weight=class_weight
+					)
+				}
 
-                for model_name, model in models.items():
-                    # Scale for Logistic Regression
-                    if 'logistic' in model_name:
-                        scaler = StandardScaler()
-                        X_train_model = scaler.fit_transform(X_train)
-                        X_test_model = scaler.transform(X_test)
-                    else:
-                        X_train_model = X_train
-                        X_test_model = X_test
+				# Simple train/test split for speed (LOOCV would be too slow for sweep)
+				try:
+					X_train, X_test, y_train, y_test = train_test_split(
+						X, y, test_size=0.3, random_state=42, stratify=y
+					)
+				except:
+					X_train, X_test, y_train, y_test = train_test_split(
+						X, y, test_size=0.3, random_state=42
+					)
 
-                    # Train and evaluate
-                    model.fit(X_train_model, y_train)
-                    y_pred = model.predict(X_test_model)
+				for model_name, model in models.items():
+					# Scale for Logistic Regression
+					if 'logistic' in model_name:
+						scaler = StandardScaler()
+						X_train_model = scaler.fit_transform(X_train)
+						X_test_model = scaler.transform(X_test)
+					else:
+						X_train_model = X_train
+						X_test_model = X_test
 
-                    acc = accuracy_score(y_test, y_pred)
+					# Train and evaluate
+					model.fit(X_train_model, y_train)
+					y_pred = model.predict(X_test_model)
 
-                    try:
-                        f1 = f1_score(y_test, y_pred, pos_label=positive_class, average='binary')
-                    except:
-                        f1 = None
+					acc = accuracy_score(y_test, y_pred)
 
-                    records.append({
-                        'lookback': lookback,
-                        'subwindow': subwindow,
-                        'model': model_name,
-                        'f1_score': f1 if f1 is not None else np.nan,
-                        'accuracy': acc if acc is not None else np.nan,
-                        'n_samples': n_samples,
-                    })
+					try:
+						f1 = f1_score(y_test, y_pred, pos_label=positive_class, average='binary')
+					except:
+						f1 = None
 
-                    tag = f'{model_name[:2].upper()} f1={f1:.3f}' if f1 is not None else f'{model_name[:2].upper()} acc={acc:.3f}'
-                    print(tag, end='  ')
+					records.append({
+						'lookback': lookback,
+						'subwindow': subwindow,
+						'model': model_name,
+						'f1_score': f1 if f1 is not None else np.nan,
+						'accuracy': acc if acc is not None else np.nan,
+						'n_samples': n_samples,
+					})
 
-            except Exception as e:
-                print(f'→ ERROR: {e}', end='')
+					tag = f'{model_name[:2].upper()} f1={f1:.3f}' if f1 is not None else f'{model_name[:2].upper()} acc={acc:.3f}'
+					print(tag, end='  ')
 
-            print()
+			except Exception as e:
+				print(f'→ ERROR: {e}', end='')
 
-    print(f'\n{"=" * 80}')
-    print(f'SWEEP COMPLETE - {len(records)} result rows collected')
-    print(f'{"=" * 80}\n')
+			print()
 
-    return pd.DataFrame(records)
+	print(f'\n{"=" * 80}')
+	print(f'SWEEP COMPLETE - {len(records)} result rows collected')
+	print(f'{"=" * 80}\n')
+
+	return pd.DataFrame(records)
 
 
 def plot_heatmaps(df: pd.DataFrame, metric: str, target_type: str) -> plt.Figure:
@@ -545,7 +571,7 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     # CONFIGURATION - Edit these parameters
     # ══════════════════════════════════════════════════════════════════════════
-    TARGET_TYPE = 'social_connection'  # 'suicide_risk' | 'self_harm' | 'sleep' | 'phq9' | 'negative_emotions' | 'social_connection'
+    TARGET_TYPE = 'minority_stress'  # 'suicide_risk' | 'self_harm' | 'sleep' | 'phq9' | 'negative_emotions' | 'social_connection'
     MAX_LOOKBACK = 30             # sweep 1 → MAX_LOOKBACK inclusive
     PROPAGATE_LABELS = False       # propagate positive labels across a user
     BALANCED_WEIGHT = False        # use balanced class weights

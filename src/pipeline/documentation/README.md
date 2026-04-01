@@ -157,11 +157,71 @@ merged_data = pipeline.transform(None)
 
 ## Configuration Options
 
-### Target Types
-- `'phq9'`: Depression prediction (binary: depressed/not_depressed)
+### Target Types (Daily Labels)
+
+The pipeline supports the following daily mental health labels for prediction:
+
+#### Risk & Safety Labels
 - `'suicide_risk'`: Suicide risk prediction (binary: at_risk/not_at_risk)
+  - Classifies likelihood of suicidal ideation or intent
+  - Based on daily survey responses
+  
 - `'self_harm'`: Self-harm risk prediction (binary: at_risk/not_at_risk)
-- `'sleep'`: Sleep risk prediction (binary: at_risk/not_at_risk)
+  - Classifies likelihood of self-injurious behavior
+  - Based on daily survey responses
+
+#### Sleep
+- `'sleep'`: Sleep quality/adequacy prediction (binary: at_risk/not_at_risk)
+  - Classifies sleep issues or insufficient sleep
+  - Based on daily self-reported sleep data
+
+#### Emotional Wellbeing
+- `'positive_emotion'`: Positive emotion prediction (binary: present/absent)
+  - Predicts presence of positive affect or life satisfaction
+  - Based on daily survey responses
+  
+- `'negative_emotion'`: Negative emotion prediction (binary: present/absent)
+  - Classifies presence of negative affect or distress
+  - Based on daily survey responses
+  
+- `'emotion_regulation'`: Emotion regulation capacity (binary: at_risk/not_at_risk)
+  - Classifies ability to manage and regulate emotions
+  - Based on daily survey responses
+
+#### Social & Relational
+- `'social_connection'`: Social connection prediction (binary: poor/adequate)
+  - Classifies quality and strength of social relationships
+  - Based on daily survey responses
+  
+- `'social_stress'`: Social stress prediction (binary: stressed/not_stressed)
+  - Classifies presence of interpersonal conflict or stress
+  - Based on daily survey responses
+
+#### Minority Mental Health
+- `'minority_stress'`: Minority stress prediction (binary: stressed/not_stressed)
+  - Classifies stress related to minority identity/stigma
+  - Based on daily survey responses
+
+#### Clinical Assessment
+- `'phq9'`: PHQ-9 depression screening (binary: depressed/not_depressed)
+  - Classifies clinical depression based on PHQ-9 criteria
+  - Based on weekly PHQ-9 survey responses
+
+**Example usage:**
+```python
+from src.pipeline.model_pipeline import ScreentimeModelPipeline
+
+# Predict any of the 10 labels
+for target in ['suicide_risk', 'self_harm', 'sleep', 'positive_emotion', 
+               'negative_emotion', 'emotion_regulation', 'social_connection',
+               'social_stress', 'minority_stress', 'phq9']:
+    pipeline = ScreentimeModelPipeline(
+        target_type=target,
+        time_windows=[6, 12]
+    )
+    results = pipeline.fit_predict()
+    print(f"{target}: {results}")
+```
 
 ### Time Windows
 List of integers representing hours before survey to use for features.
@@ -324,4 +384,3 @@ python -m pytest src/pipeline/tests/test_model_pipeline.py
 For more details on scikit-learn pipelines:
 - [Sklearn Pipeline Documentation](https://scikit-learn.org/stable/modules/compose.html)
 - [Custom Transformers Guide](https://scikit-learn.org/stable/developers/develop.html)
-
