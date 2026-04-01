@@ -289,10 +289,16 @@ class LabelExtractor(BaseEstimator, TransformerMixin):
     """
     Extracts and prepares target labels from survey data.
 
+    Supports all daily labels:
+    - phq9 (depression)
+    - suicide_risk, self_harm, positive_emotion, negative_emotion
+    - social_stress, social_connection, minority_stress
+    - emotion_regulation, sleep
+
     Parameters:
     -----------
     target_type : str, default='phq9'
-        Type of target: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
+        Type of target: 'phq9' or any daily label
     """
 
     def __init__(self, target_type='phq9'):
@@ -303,7 +309,11 @@ class LabelExtractor(BaseEstimator, TransformerMixin):
         """Extract label data based on target type."""
         if self.target_type == 'phq9':
             self.labels_ = get_phq9_dataframe()
-        elif self.target_type in ['suicide_risk', 'self_harm', 'sleep']:
+        elif self.target_type in [
+            'suicide_risk', 'self_harm', 'sleep', 'positive_emotion',
+            'negative_emotion', 'social_stress', 'social_connection',
+            'minority_stress', 'emotion_regulation'
+        ]:
             self.labels_ = get_daily_labels_dataframe()
         else:
             raise ValueError(f"Unknown target_type: {self.target_type}")
@@ -319,10 +329,16 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
     """
     Merges processed features with target labels.
 
+    Supports all daily labels:
+    - phq9 (depression)
+    - suicide_risk, self_harm, positive_emotion, negative_emotion
+    - social_stress, social_connection, minority_stress
+    - emotion_regulation, sleep
+
     Parameters:
     -----------
     target_type : str, default='phq9'
-        Type of target: 'phq9', 'suicide_risk', 'self_harm', or 'sleep'
+        Type of target: 'phq9' or any daily label
     time_windows : list of int or None, default=None
         List of time windows (hours before survey) for screentime features
         If None, uses weekly aggregation for PHQ9
@@ -382,7 +398,12 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                     'suicide_risk': 'suicide_risk_label',
                     'self_harm': 'self_harm_risk_label',
                     'sleep': 'sleep_label',
-                    'negative_emotions': 'negative_emotion_label'
+                    'positive_emotion': 'positive_emotion_label',
+                    'negative_emotion': 'negative_emotion_label',
+                    'social_stress': 'social_stress_label',
+                    'social_connection': 'social_connection_label',
+                    'minority_stress': 'minority_stress_label',
+                    'emotion_regulation': 'emotion_regulation_label'
                 }
                 label_col = label_col_map[self.target_type]
 
@@ -474,6 +495,12 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
     """
     Encodes target labels for modeling.
 
+    Supports all daily labels:
+    - phq9 (depression)
+    - suicide_risk, self_harm, positive_emotion, negative_emotion
+    - social_stress, social_connection, minority_stress
+    - emotion_regulation, sleep
+
     Parameters:
     -----------
     target_type : str, default='phq9'
@@ -490,16 +517,26 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
         if self.target_type == 'phq9':
             self.label_col_ = 'severity_label'
             self.classes_ = ['not_depressed', 'depressed']
-        elif self.target_type in ['suicide_risk', 'self_harm', 'sleep', 'negative_emotions', 'social_connection']:
+        elif self.target_type in [
+            'suicide_risk', 'self_harm', 'sleep', 'positive_emotion',
+            'negative_emotion', 'social_stress', 'social_connection',
+            'minority_stress', 'emotion_regulation'
+        ]:
             label_col_map = {
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
                 'sleep': 'sleep_label',
-                'negative_emotions': 'negative_emotion_label',
-                'social_connection': 'social_connection_label'
+                'positive_emotion': 'positive_emotion_label',
+                'negative_emotion': 'negative_emotion_label',
+                'social_stress': 'social_stress_label',
+                'social_connection': 'social_connection_label',
+                'minority_stress': 'minority_stress_label',
+                'emotion_regulation': 'emotion_regulation_label'
             }
             self.label_col_ = label_col_map[self.target_type]
             self.classes_ = ['not_at_risk', 'at_risk']
+        else:
+            raise ValueError(f"Unknown target_type: {self.target_type}")
 
         return self
 
@@ -674,15 +711,21 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             label_col = 'severity_label'
             positive_class = 'depressed'
         else:
-            # Risk labels
+            # Risk labels - support all 9 daily labels
             label_col_map = {
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
                 'sleep': 'sleep_label',
-                'negative_emotions': 'negative_emotion_label',
-                'social_connection': 'social_connection_label'
+                'positive_emotion': 'positive_emotion_label',
+                'negative_emotion': 'negative_emotion_label',
+                'social_stress': 'social_stress_label',
+                'social_connection': 'social_connection_label',
+                'minority_stress': 'minority_stress_label',
+                'emotion_regulation': 'emotion_regulation_label'
             }
-            label_col = label_col_map[self.target_type]
+            label_col = label_col_map.get(self.target_type)
+            if label_col is None:
+                raise ValueError(f"Unknown target_type: {self.target_type}")
 
             hourly_features = merge_daily_screentime_features_with_risk_labels(
                 label_column=label_col,

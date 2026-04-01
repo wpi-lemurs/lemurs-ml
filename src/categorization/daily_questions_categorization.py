@@ -66,58 +66,204 @@ def parse_time_answer(tstr):
 
 # Risk label functions
 def suicide_risk_label(q2, q3, q5, q7, q8, q12, q13):
-    if (q2 is not None and q2 >= 2) or (q3 is not None and q3 >= 2) or (q7 is not None and q7 >= 2):
-        return "at_risk"
-    if any(v == 1 for v in [q5, q8, q12, q13] if v is not None):
-        return "at_risk"
-    return "not_at_risk"
+	"""
+	Suicide Risk Score (Questions 2, 3, 5, 7, 8, 12, 13)
+
+	Questions:
+	  (2) 5-scale: I wanted to die
+	  (3) 5-scale: I thought about taking my life
+	  (5) yes-no: Considered a specific suicide method or made preparations
+	  (7) 5-scale: How intense was your desire to kill yourself?
+	  (8) yes-no: Do you intend to kill yourself right now?
+	  (12) yes-no: Attempted suicide
+	  (13) yes-no: Were you severely injured or required medical intervention?
+
+	AT RISK if:
+	  - Any ideation item (q2, q3, q7) ≥ 2
+	  - Any yes-no question (q5, q8, q12, q13) is answered YES (1)
+
+	Otherwise: NOT AT RISK
+	"""
+	if (q2 is not None and q2 >= 2) or (q3 is not None and q3 >= 2) or (q7 is not None and q7 >= 2):
+		return "at_risk"
+	if any(v == 1 for v in [q5, q8, q12, q13] if v is not None):
+		return "at_risk"
+	return "not_at_risk"
 
 def self_harm_risk_label(q9, q11, q15, q16, q17, q18):
-    if q9 is not None and q9 >= 2:
-        return "at_risk"
-    if any(v == 1 for v in [q11, q15, q16, q17, q18] if v is not None):
-        return "at_risk"
-    return "not_at_risk"
+	"""
+	Self-Harm and Risky Behavior Score (Questions 9, 11, 15, 16, 17, 18)
+	Scale: 0-9
+
+	Questions:
+	  (9) 5-scale: How strong was your urge to injure yourself without intent to die?
+	  (11) yes-no: Injured yourself without intent to die
+	  (15) yes-no: Eaten unusually large amount of food with loss of control
+	  (16) yes-no: Made yourself sick (vomit) or taken laxatives
+	  (17) yes-no: Gotten drunk
+	  (18) yes-no: Taken drugs or medication not as prescribed
+
+	AT RISK if:
+	  - Question 9 ≥ 2
+	  - Any yes-no question (q11, q15, q16, q17, q18) is answered YES (1)
+
+	Otherwise: NOT AT RISK
+	"""
+	if q9 is not None and q9 >= 2:
+		return "at_risk"
+	if any(v == 1 for v in [q11, q15, q16, q17, q18] if v is not None):
+		return "at_risk"
+	return "not_at_risk"
 
 def positive_emotion_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total <= 5 else "not_at_risk"
+	"""
+	Positive Emotion Score (Questions 21, 22, 37)
+	Scale: 0-12 (sum of three 5-scale items)
+
+	Questions:
+	  (21) 5-scale: Felt content
+	  (22) 5-scale: Felt cheerful
+	  (37) 5-scale: Performed well or succeeded at something
+
+	AT RISK if:
+	  - Sum of total score ≤ 5
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total <= 5 else "not_at_risk"
 
 def negative_emotion_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total >= 14 else "not_at_risk"
+	"""
+	Negative Emotion Score (Questions 23, 24, 25, 26, 27, 28, 36)
+	Scale: 0-28 (sum of seven 5-scale items)
+
+	Questions:
+	  (23) 5-scale: Felt nervous
+	  (24) 5-scale: Felt sad
+	  (25) 5-scale: Felt useless
+	  (26) 5-scale: Felt lonely
+	  (27) 5-scale: Felt like giving up because nothing can be done
+	  (28) 5-scale: Felt people don't understand my experiences
+	  (36) 5-scale: Failed or performed poorly at something
+
+	AT RISK if:
+	  - Sum of total score ≥ 14
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total >= 14 else "not_at_risk"
 
 def social_stress_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total >= 6 else "not_at_risk"
+	"""
+	Social Stress Score (Questions 31, 32, 33)
+	Scale: 0-12 (sum of three 5-scale items)
+
+	Questions:
+	  (31) 5-scale: Gotten into argument/disagreement with friend, significant other, or family
+	  (32) 5-scale: Felt insulted or criticized
+	  (33) 5-scale: Felt rejected, abandoned, excluded, or left out
+
+	AT RISK if:
+	  - Sum of total score ≥ 6
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total >= 6 else "not_at_risk"
 
 def social_connection_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total <= 4 else "not_at_risk"
+	"""
+	Social Connection Score (Questions 34, 35)
+	Scale: 0-8 (sum of two 5-scale items)
+
+	Questions:
+	  (34) 5-scale: Felt admired or complimented
+	  (35) 5-scale: Felt wanted or included
+
+	AT RISK if:
+	  - Sum of total score ≤ 4
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total <= 4 else "not_at_risk"
 
 def minority_stress_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total >= 10 else "not_at_risk"
+	"""
+	Minority Stress Score (Questions 40, 41, 42, 43, 44)
+	Scale: 0-20 (sum of five 5-scale items)
+
+	Questions:
+	  (40) 5-scale: Avoided subjects of sex/love/attraction to conceal sexual orientation
+	  (41) 5-scale: Felt alienated from self because of LGBT identity
+	  (42) 5-scale: Worried people will reject me because I'm LGBT
+	  (43) 5-scale: Been treated unfairly because I am LGBT
+	  (44) 5-scale: Exposed to anti-LGBT media/social media content
+
+	AT RISK if:
+	  - Sum of total score ≥ 10
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total >= 10 else "not_at_risk"
 
 def emotion_regulation_label(total):
-    if total is None:
-        return None
-    return "at_risk" if total >= 9 else "not_at_risk"
+	"""
+	Emotion Regulation Score (Questions 47, 48, 49, 50, 51, 52)
+	Scale: 0-18 (sum of six 4-scale items; note: these are 4-scale, not 5-scale)
+
+	When I felt negative emotions:
+	  (47) 4-scale: Had difficulty focusing on other things
+	  (48) 4-scale: Thought I should not feel that way
+	  (49) 4-scale: Had difficulty controlling my behaviors
+	  (50) 4-scale: Didn't pay attention to how I felt
+	  (51) 4-scale: Thought they would last for a long time
+	  (52) 4-scale: Had difficulty making sense out of them
+
+	AT RISK if:
+	  - Sum of total score ≥ 9
+
+	Otherwise: NOT AT RISK
+	"""
+	if total is None:
+		return None
+	return "at_risk" if total >= 9 else "not_at_risk"
 
 def sleep_label(duration_hours, quality):
-    # duration_hours may be None
-    if duration_hours is None and quality is None:
-        return None
-    if duration_hours is not None and (duration_hours <= 5 or duration_hours >= 11):
-        return "at_risk"
-    if quality is not None and quality <= 2:
-        return "at_risk"
-    return "not_at_risk"
+	"""
+	Sleep Score (Questions 54, 55, 56)
+	Scale: Duration in hours + Quality (5-scale)
+
+	Questions:
+	  (54) Time-picker: What time did you fall asleep last night? (HH:MM am/pm)
+	  (55) Time-picker: What time did you wake up this morning? (HH:MM am/pm)
+	  (56) 5-scale: How would you rate the quality of your sleep?
+
+	Duration is calculated as: wake_time - sleep_time
+
+	AT RISK if:
+	  - Sleep duration ≤ 5 hours
+	  - Sleep duration ≥ 11 hours
+	  - Quality of sleep score ≤ 2
+
+	Otherwise: NOT AT RISK
+	"""
+	# duration_hours may be None
+	if duration_hours is None and quality is None:
+		return None
+	if duration_hours is not None and (duration_hours <= 5 or duration_hours >= 11):
+		return "at_risk"
+	if quality is not None and quality <= 2:
+		return "at_risk"
+	return "not_at_risk"
 
 # Main extraction & processing
 
