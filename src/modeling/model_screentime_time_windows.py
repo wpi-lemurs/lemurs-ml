@@ -40,6 +40,8 @@ matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
 import xgboost as xgb
+from tabpfn import TabPFNClassifier
+from tabpfn.constants import ModelVersion
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -140,9 +142,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         # Store predictions and true labels across all folds
         all_lr_preds = []
         all_rf_preds = []
+        all_xgb_preds = []
+        all_tab_preds = []
         all_lr_probs = []
         all_rf_probs = []
+        all_xgb_probs = []
+        all_tab_probs = []
         all_y_test = []
+        all_baseline_true = []
+        all_baseline_pred = []
 
         fold_num = 0
         successful_folds = 0
@@ -154,14 +162,24 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
             test_user = groups.iloc[test_idx].iloc[0]
 
+            # Baseline for held-out user: previous survey label predicts current label.
+            baseline_df = data.iloc[test_idx][['survey_timestamp', label_col]].copy()
+            baseline_df = baseline_df.sort_values('survey_timestamp')
+            # get label for each user's previous survey
+            baseline_df['baseline_pred'] = baseline_df[label_col].shift(1)
+            # remove first survey (no data before it to use)
+            baseline_df = baseline_df.dropna(subset=['baseline_pred'])
+            
+            if not baseline_df.empty:
+                all_baseline_true.extend(baseline_df[label_col].tolist())
+                all_baseline_pred.extend(baseline_df['baseline_pred'].tolist())
+
             # Skip fold if training or test set has only one class
             if y_train.nunique() < 2:
                 continue
 
             if y_test.nunique() < 1:
                 continue
-
-            successful_folds += 1
 
             # Scale features for Logistic Regression
             scaler = StandardScaler()
@@ -180,10 +198,36 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
 
+                tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
+                tab_model.fit(X_train, y_train)
+                tab_pred = tab_model.predict(X_test)
+
+                # XGBoost (without scaling)
+                le = LabelEncoder()
+                y_train_enc = le.fit_transform(y_train)
+                
+                # Calculate scale_pos_weight to handle class imbalance
+                class_counts = pd.Series(y_train_enc).value_counts()
+                scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
+                
+                xgb_model = xgb.XGBClassifier(
+                    n_estimators=100, 
+                    max_depth=6, 
+                    learning_rate=0.1, 
+                    scale_pos_weight=scale_pos_weight,
+                    random_state=42
+                )
+                xgb_model.fit(X_train, y_train_enc)
+                xgb_pred_enc = xgb_model.predict(X_test)
+                xgb_pred = le.inverse_transform(xgb_pred_enc)
+
                 # Store predictions and true labels
                 all_lr_preds.extend(lr_pred)
                 all_rf_preds.extend(rf_pred)
+                all_xgb_preds.extend(xgb_pred)
+                all_tab_preds.extend(tab_pred)
                 all_y_test.extend(y_test)
+                successful_folds += 1
 
                 # Store probabilities if possible
                 try:
@@ -198,10 +242,25 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 except:
                     pass
 
+                try:
+                    xgb_prob = xgb_model.predict_proba(X_test)[:, 1]
+                    all_xgb_probs.extend(xgb_prob)
+                except:
+                    pass
+
+                try:
+                    tab_prob = tab_model.predict_proba(X_test)[:, 1]
+                    all_tab_probs.extend(tab_prob)
+                except:
+                    pass
+
             except Exception as e:
                 continue
 
         if successful_folds == 0:
+            return None
+
+        if len(all_y_test) == 0 or len(all_lr_preds) == 0 or len(all_rf_preds) == 0 or len(all_xgb_preds) == 0 or len(all_tab_preds) == 0:
             return None
 
 
@@ -209,15 +268,31 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         all_y_test = np.array(all_y_test)
         all_lr_preds = np.array(all_lr_preds)
         all_rf_preds = np.array(all_rf_preds)
+        all_xgb_preds = np.array(all_xgb_preds)
+        all_tab_preds = np.array(all_tab_preds)
 
         # Calculate metrics across all folds
         lr_acc = accuracy_score(all_y_test, all_lr_preds)
         rf_acc = accuracy_score(all_y_test, all_rf_preds)
+        xgb_acc = accuracy_score(all_y_test, all_xgb_preds)
+        tab_acc = accuracy_score(all_y_test, all_tab_preds)
 
         # Generate confusion matrices
         lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
         rf_cm = confusion_matrix(all_y_test, all_rf_preds, labels=label_order)
+        xgb_cm = confusion_matrix(all_y_test, all_xgb_preds, labels=label_order)
+        tab_cm = confusion_matrix(all_y_test, all_tab_preds, labels=label_order)
 
+        baseline_cm = None
+        baseline_acc = None
+        baseline_f1 = None
+        if len(all_baseline_true) > 0:
+            baseline_acc = accuracy_score(all_baseline_true, all_baseline_pred)
+            baseline_cm = confusion_matrix(all_baseline_true, all_baseline_pred, labels=label_order)
+            try:
+                baseline_f1 = f1_score(all_baseline_true, all_baseline_pred, pos_label=positive_class, average='binary')
+            except:
+                baseline_f1 = None
 
         # Store results
         results = {
@@ -228,11 +303,21 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'target_type': target_type,
             'cv_method': 'LOOCV',
             'successful_folds': successful_folds,
+            'baseline_eval_samples': len(all_baseline_true),
             'lr_accuracy': lr_acc,
             'rf_accuracy': rf_acc,
+            'xgb_accuracy': xgb_acc,
+            'tab_accuracy': tab_acc,
             'lr_confusion_matrix': lr_cm.tolist(),
-            'rf_confusion_matrix': rf_cm.tolist()
+            'rf_confusion_matrix': rf_cm.tolist(),
+            'xgb_confusion_matrix': xgb_cm.tolist(),
+            'tab_confusion_matrix': tab_cm.tolist()
         }
+
+        if baseline_cm is not None:
+            results['baseline_confusion_matrix'] = baseline_cm.tolist()
+            results['baseline_accuracy'] = baseline_acc
+            results['baseline_f1_score'] = baseline_f1
 
         # Calculate F1 score
         try:
@@ -244,6 +329,16 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['rf_f1_score'] = f1_score(all_y_test, all_rf_preds, pos_label=positive_class, average='binary')
         except:
             results['rf_f1_score'] = None
+
+        try:
+            results['xgb_f1_score'] = f1_score(all_y_test, all_xgb_preds, pos_label=positive_class, average='binary')
+        except:
+            results['xgb_f1_score'] = None
+        
+        try:
+            results['tab_f1_score'] = f1_score(all_y_test, all_tab_preds, pos_label=positive_class, average='binary')
+        except:
+            results['tab_f1_score'] = None
 
         # Feature importance (train on full dataset)
         rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
@@ -361,7 +456,19 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         y_train_enc = le.fit_transform(y_train)
         y_test_enc = le.transform(y_test)
 
-        xgb_model = xgb.XGBClassifier() # start with default params
+        # Calculate scale_pos_weight to handle class imbalance
+        negative_count = len(y_train_enc[y_train_enc == 0])
+        positive_count = len(y_train_enc[y_train_enc == 1])
+        scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=100, 
+            max_depth=6, 
+            learning_rate=0.05, 
+            scale_pos_weight=scale_pos_weight,
+            random_state=42
+        )
+
         xgb_model.fit(X_train, y_train_enc)
         xgb_pred_enc = xgb_model.predict(X_test)
         xgb_pred = le.inverse_transform(xgb_pred_enc)
@@ -377,6 +484,21 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         except:
             results['xgb_f1_score'] = None
 
+        # Train TabPFN
+        tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
+        tab_model.fit(X_train, y_train)
+        tab_pred = tab_model.predict(X_test)
+        tab_acc = accuracy_score(y_test, tab_pred)
+
+        # Generate confusion matrix with explicit label order
+        tab_cm = confusion_matrix(y_test, tab_pred, labels=label_order)
+        results['tab_confusion_matrix'] = tab_cm.tolist()
+
+        results['tab_accuracy'] = tab_acc
+        try:
+            results['tab_f1_score'] = f1_score(y_test, tab_pred, pos_label=positive_class, average='binary')
+        except:
+            results['tab_f1_score'] = None
 
         return results
 
@@ -462,7 +584,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             axes[idx, 2].set_ylabel('True Label')
             axes[idx, 2].set_xlabel('Predicted Label')
         
-        # Plot Baseline confusion matrix
+        '''# Plot Baseline confusion matrix
         if 'baseline_confusion_matrix' in result:
             baseline_cm = np.array(result['baseline_confusion_matrix'])
             sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
@@ -472,6 +594,20 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             title = f'Baseline - {time_window}h window\nAccuracy: {result["baseline_accuracy"]:.3f}'
             if 'baseline_f1_score' in result and result['baseline_f1_score'] is not None:
                 title += f' | F1: {result["baseline_f1_score"]:.3f}'
+            axes[idx, 3].set_title(title)
+            axes[idx, 3].set_ylabel('True Label')
+            axes[idx, 3].set_xlabel('Predicted Label')'''
+
+        # Plot TabPFN confusion matrix
+        if 'tab_confusion_matrix' in result:
+            tab_cm = np.array(result['tab_confusion_matrix'])
+            sns.heatmap(tab_cm, annot=True, fmt='d', cmap='Blues',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 3], cbar=True)
+            # Build title with F1 score if available
+            title = f'TabPFN - {time_window}h window\nAccuracy: {result["tab_accuracy"]:.3f}'
+            if 'tab_f1_score' in result and result['tab_f1_score'] is not None:
+                title += f' | F1: {result["tab_f1_score"]:.3f}'
             axes[idx, 3].set_title(title)
             axes[idx, 3].set_ylabel('True Label')
             axes[idx, 3].set_xlabel('Predicted Label')
@@ -490,7 +626,16 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_f1_score'] if 'lr_f1_score' in all_results[i] and all_results[i]['lr_f1_score'] is not None else all_results[i]['lr_accuracy'])
         best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_f1_score'] if 'rf_f1_score' in all_results[i] and all_results[i]['rf_f1_score'] is not None else all_results[i]['rf_accuracy'])
         best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_f1_score'] if 'xgb_f1_score' in all_results[i] and all_results[i]['xgb_f1_score'] is not None else all_results[i]['xgb_accuracy'])
-        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_f1_score'] if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None else all_results[i]['baseline_accuracy'])
+        # has_baseline = all('baseline_accuracy' in r for r in all_results)
+        has_baseline = False # TEMPORARY
+        if has_baseline:
+            best_baseline_idx = max(
+                range(len(all_results)),
+                key=lambda i: all_results[i]['baseline_f1_score']
+                if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None
+                else all_results[i]['baseline_accuracy']
+            )
+        best_tab_idx = max(range(len(all_results)), key=lambda i: all_results[i]['tab_f1_score'] if 'tab_f1_score' in all_results[i] and all_results[i]['tab_f1_score'] is not None else all_results[i]['tab_accuracy'])
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
@@ -539,16 +684,35 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         axes[2].set_ylabel('True Label', fontsize=11)
         axes[2].set_xlabel('Predicted Label', fontsize=11)
 
-        # Best Baseline
-        best_baseline = all_results[best_baseline_idx]
-        baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
-        sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
+        # Best Baseline (available when prior surveys exist in evaluation rows)
+        if has_baseline:
+            best_baseline = all_results[best_baseline_idx]
+            baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
+            sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[3], cbar=True, annot_kws={'size': 14})
+            # Build title with F1 score if available
+            title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
+            if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
+                title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
+            axes[3].set_title(title, fontsize=12, fontweight='bold')
+            axes[3].set_ylabel('True Label', fontsize=11)
+            axes[3].set_xlabel('Predicted Label', fontsize=11)
+        '''else:
+            axes[3].axis('off')
+            axes[3].text(0.5, 0.5, 'Baseline unavailable\n(no prior surveys)',
+                         ha='center', va='center', fontsize=12)'''
+
+        # Best TabPFN
+        best_tab = all_results[best_tab_idx]
+        tab_cm = np.array(best_tab['tab_confusion_matrix'])
+        sns.heatmap(tab_cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[3], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
-        title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
-        if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
-            title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
+        title = f'Best TabPFN\n{best_tab["time_window"]}h window - Accuracy: {best_tab["tab_accuracy"]:.3f}'
+        if 'tab_f1_score' in best_tab and best_tab['tab_f1_score'] is not None:
+            title += f' | F1: {best_tab["tab_f1_score"]:.3f}'
         axes[3].set_title(title, fontsize=12, fontweight='bold')
         axes[3].set_ylabel('True Label', fontsize=11)
         axes[3].set_xlabel('Predicted Label', fontsize=11)
@@ -650,9 +814,14 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
 
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
-        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'baseline_accuracy']
-        if 'lr_f1_score' in comparison_df.columns:
-            display_cols.extend(['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'baseline_f1_score'])
+        display_cols = ['time_window', 'total_samples']
+        # TEMP: for col in ['lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'baseline_accuracy']:
+        for col in ['lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'tab_accuracy']:
+            if col in comparison_df.columns:
+                display_cols.append(col)
+        for col in ['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'tab_f1_score']: #TEMP
+            if col in comparison_df.columns:
+                display_cols.append(col)
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
@@ -660,7 +829,8 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             best_lr_window = comparison_df.loc[comparison_df['lr_f1_score'].idxmax()]
             best_rf_window = comparison_df.loc[comparison_df['rf_f1_score'].idxmax()]
             best_xgb_window = comparison_df.loc[comparison_df['xgb_f1_score'].idxmax()]
-
+            best_tab_window = comparison_df.loc[comparison_df['tab_f1_score'].idxmax()]
+            
             print(f"\n" + "="*80)
             print("BEST PERFORMING TIME WINDOWS")
             print("="*80)
@@ -679,13 +849,21 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
             print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
 
-            print(f"\nBaseline Model:")
-            print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
-            print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
+            print(f"\nTabPFN:")
+            print(f"  Best window: {best_tab_window['time_window']}h")
+            print(f"  F1 Score: {best_tab_window['tab_f1_score']:.4f}")
+            print(f"  Accuracy: {best_tab_window['tab_accuracy']:.4f}")
+
+            if 'baseline_accuracy' in comparison_df.columns:
+                print(f"\nBaseline Model:")
+                if 'baseline_f1_score' in comparison_df.columns:
+                    print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
+                print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
         else:
             best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
             best_rf_window = comparison_df.loc[comparison_df['rf_accuracy'].idxmax()]
             best_xgb_window = comparison_df.loc[comparison_df['xgb_accuracy'].idxmax()]
+            best_tab_window = comparison_df.loc[comparison_df['tab_accuracy'].idxmax()]
 
             print(f"\n" + "="*80)
             print("BEST PERFORMING TIME WINDOWS (by accuracy)")
@@ -702,8 +880,13 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
             print(f"  Best window: {best_xgb_window['time_window']}h")
             print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
 
-            print(f"\nBaseline Model:")
-            print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
+            print(f"\nTabPFN:")
+            print(f"  Best window: {best_tab_window['time_window']}h")
+            print(f"  Accuracy: {best_tab_window['tab_accuracy']:.4f}")
+
+            if 'baseline_accuracy' in comparison_df.columns:
+                print(f"\nBaseline Model:")
+                print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
 
 
         # Generate confusion matrix visualizations
