@@ -82,9 +82,8 @@ class ScreentimeModelPipeline:
         Random seed for reproducibility
     save_confusion_matrices : bool, default=True
         Whether to save confusion matrix plots
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-        If False, uses the original method based on screentime table.
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
 
     Methods:
     --------
@@ -124,7 +123,7 @@ class ScreentimeModelPipeline:
         test_size=0.3,
         random_state=42,
         save_confusion_matrices=True,
-        use_accurate_method=False,
+        use_accurate_method=True,
         standardized=True
     ):
         self.target_type = target_type
@@ -155,7 +154,7 @@ class ScreentimeModelPipeline:
                 lookback_hours=self.lookback_hours,
                 subwindow_hours=self.subwindow_hours,
                 propagate_labels=self.propagate_labels,
-                use_accurate_method=self.use_accurate_method,
+                use_accurate_method=True,
                 standardized=self.standardized
             )
         elif target_type == 'phq9':
@@ -163,7 +162,7 @@ class ScreentimeModelPipeline:
                 time_windows=self.time_windows,
                 fill_method=self.fill_method,
                 propagate_labels=self.propagate_labels,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
         elif target_type in ['suicide_risk', 'self_harm', 'sleep', 'positive_emotion', 'negative_emotion', 'social_stress', 'social_connection', 'minority_stress', 'emotion_regulation']:
             self.data_pipeline = create_screentime_risk_pipeline(
@@ -171,7 +170,7 @@ class ScreentimeModelPipeline:
                 time_windows=self.time_windows,
                 fill_method=self.fill_method,
                 propagate_labels=self.propagate_labels,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
         else:
             raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', 'positive_emotion', 'negative_emotion', 'social_stress', 'social_connection', 'minority_stress', or 'emotion_regulation'")

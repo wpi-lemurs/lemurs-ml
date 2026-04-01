@@ -415,8 +415,7 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated PHQ-9 labels
@@ -426,7 +425,7 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
                                                       app_user_id=app_user_id, date_range=date_range,
-                                                      use_accurate_method=use_accurate_method)
+                                                      use_accurate_method=True)
 
     if hourly_screentime_df.empty:
         print("Warning: No hourly screentime data available")
@@ -474,8 +473,7 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated risk labels
@@ -485,7 +483,7 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
                                                       app_user_id=app_user_id, date_range=date_range,
-                                                      use_accurate_method=use_accurate_method)
+                                                      use_accurate_method=True)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:
@@ -518,8 +516,7 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'phq9_response_id', 'survey_timestamp',
@@ -533,10 +530,10 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     if screentime_df is None:
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor=week_anchor,
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range, use_accurate_method=use_accurate_method)
+                                             date_range=date_range, use_accurate_method=True)
     else:
         hourly_data = hourly_screentime_data(screentime_df, 'start_time', week_anchor, app_user_id,
-                                            fill_method, date_range, use_accurate_method)
+                                            fill_method, date_range, True)
 
     if hourly_data.empty:
         print("Warning: No screentime data available")
@@ -771,8 +768,7 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
                           This allows experimenting with different time windows (e.g., 3, 6, 9, 12, 24 hours)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -787,10 +783,10 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
         # Use default screentime_data from passive_data_analysis
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor='MON',
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range, use_accurate_method=use_accurate_method)
+                                             date_range=date_range, use_accurate_method=True)
     else:
         hourly_data = hourly_screentime_data(screentime_df, 'start_time', 'MON', app_user_id,
-                                            fill_method, date_range, use_accurate_method)
+                                            fill_method, date_range, True)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:

@@ -42,7 +42,7 @@ def _select_pipeline(
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
+            use_accurate_method=True,
             standardized=standardized,
         )
 
@@ -50,13 +50,13 @@ def _select_pipeline(
         return create_screentime_phq9_pipeline(
             time_windows=list(time_windows),
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
+            use_accurate_method=True,
         )
     return create_screentime_risk_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
-        use_accurate_method=use_accurate_method,
+        use_accurate_method=True,
     )
 
 
@@ -577,7 +577,7 @@ def run_experiment(
     target_type: str = "social_connection",
     time_windows: Iterable[int] = (3, 6, 9, 12),
     propagate_labels: bool = False,
-    use_accurate_method: bool = False,
+    use_accurate_method: bool = True,
     hidden_layers: Iterable[int] = (128, 64),
     weight_decay: float = 1e-4,
     use_weighted_sampler: bool = True,
@@ -592,6 +592,7 @@ def run_experiment(
     early_stopping_min_delta: float = 1e-4,
     min_epochs: int = 5,
 ):
+    # use_accurate_method is deprecated; app-table screentime is always used.
     pipeline = _select_pipeline(
         target_type,
         time_windows,
@@ -633,10 +634,10 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "social_connection"),
+        target_type=os.getenv("TARGET_TYPE", "self_harm"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
-        use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "true").lower() == "true",
+        use_accurate_method=True,
         hidden_layers=(128, 64),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
