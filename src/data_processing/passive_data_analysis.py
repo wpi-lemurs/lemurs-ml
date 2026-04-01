@@ -29,6 +29,7 @@ if 'start_time' in screentime_data.columns and 'end_time' in screentime_data.col
 def calculate_accurate_screentime_from_app_table(screentime_app_df=None, screentime_df=None):
     """
     Calculate accurate screentime from the screentime_app table by computing actual start times.
+    ** THIS SHOULD BE THE ONLY SCREENTIME METHOD USED IN THIS REPOSITORY **
 
     The screentime table has inaccurate start times. This function fixes this by:
     1. Joining screentime_app with screentime on screentime_id
