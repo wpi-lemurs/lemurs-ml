@@ -34,7 +34,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix
-from sklearn.preprocessing import LabelEncoder
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
@@ -307,7 +306,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'target_type': target_type,
             'cv_method': 'LOOCV',
             'successful_folds': successful_folds,
-            'baseline_eval_samples': len(all_baseline_true),
             'lr_balanced_accuracy': lr_balanced_acc,
             'rf_balanced_accuracy': rf_balanced_acc,
             'xgb_balanced_accuracy': xgb_balanced_acc,
@@ -456,26 +454,21 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
         # Train XGBoost model
-        le = LabelEncoder()
-        y_train_enc = le.fit_transform(y_train)
-        y_test_enc = le.transform(y_test)
 
         # Calculate scale_pos_weight to handle class imbalance
-        negative_count = len(y_train_enc[y_train_enc == 0])
-        positive_count = len(y_train_enc[y_train_enc == 1])
-        scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
-
+        class_counts = pd.Series(y_train).value_counts()
+        scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
+                
+        # TODO: Tune hyperparameters (GridSearchCV?)
         xgb_model = xgb.XGBClassifier(
-            n_estimators=100, 
-            max_depth=6, 
+            n_estimators=600, 
+            max_depth=5, 
             learning_rate=0.05, 
             scale_pos_weight=scale_pos_weight,
             random_state=42
         )
-
-        xgb_model.fit(X_train, y_train_enc)
-        xgb_pred_enc = xgb_model.predict(X_test)
-        xgb_pred = le.inverse_transform(xgb_pred_enc)
+        xgb_model.fit(X_train, y_train)
+        xgb_pred = xgb_model.predict(X_test)
         xgb_balanced_acc = balanced_accuracy_score(y_test, xgb_pred)
 
         # Generate confusion matrix with explicit label order
