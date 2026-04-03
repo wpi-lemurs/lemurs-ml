@@ -420,12 +420,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         lr_balanced_acc = balanced_accuracy_score(y_test, lr_pred)
 
         # Generate confusion matrix with explicit label order
-        lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        lr_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        lr_pred = np.where(lr_pred == 1, positive_class, f'not_{positive_class}')
+        lr_cm = confusion_matrix(lr_y_test, lr_pred, labels=label_order)
         results['lr_confusion_matrix'] = lr_cm.tolist()
 
         results['lr_balanced_accuracy'] = lr_balanced_acc
         try:
-            results['lr_f1_score'] = f1_score(y_test, lr_pred, pos_label=positive_class, average='binary')
+            results['lr_f1_score'] = f1_score(lr_y_test, lr_pred, pos_label=positive_class, average='binary')
         except:
             results['lr_f1_score'] = None
 
@@ -436,12 +439,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         rf_balanced_acc = balanced_accuracy_score(y_test, rf_pred)
 
         # Generate confusion matrix with explicit label order (same as LR above)
-        rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        rf_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        rf_pred = np.where(rf_pred == 1, positive_class, f'not_{positive_class}')
+        rf_cm = confusion_matrix(rf_y_test, rf_pred, labels=label_order)
         results['rf_confusion_matrix'] = rf_cm.tolist()
 
         results['rf_balanced_accuracy'] = rf_balanced_acc
         try:
-            results['rf_f1_score'] = f1_score(y_test, rf_pred, pos_label=positive_class, average='binary')
+            results['rf_f1_score'] = f1_score(rf_y_test, rf_pred, pos_label=positive_class, average='binary')
         except:
             results['rf_f1_score'] = None
 
@@ -454,7 +460,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
         # Train XGBoost model
-
         # Calculate scale_pos_weight to handle class imbalance
         class_counts = pd.Series(y_train).value_counts()
         scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
@@ -472,12 +477,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         xgb_balanced_acc = balanced_accuracy_score(y_test, xgb_pred)
 
         # Generate confusion matrix with explicit label order
-        xgb_cm = confusion_matrix(y_test, xgb_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        xgb_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        xgb_pred = np.where(xgb_pred == 1, positive_class, f'not_{positive_class}')
+        xgb_cm = confusion_matrix(xgb_y_test, xgb_pred, labels=label_order)
         results['xgb_confusion_matrix'] = xgb_cm.tolist()
 
         results['xgb_balanced_accuracy'] = xgb_balanced_acc
         try:
-            results['xgb_f1_score'] = f1_score(y_test, xgb_pred, pos_label=positive_class, average='binary')
+            results['xgb_f1_score'] = f1_score(xgb_y_test, xgb_pred, pos_label=positive_class, average='binary')
         except:
             results['xgb_f1_score'] = None
 
@@ -488,12 +496,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         tab_balanced_acc = balanced_accuracy_score(y_test, tab_pred)
 
         # Generate confusion matrix with explicit label order
-        tab_cm = confusion_matrix(y_test, tab_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        tab_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        tab_pred = np.where(tab_pred == 1, positive_class, f'not_{positive_class}')
+        tab_cm = confusion_matrix(tab_y_test, tab_pred, labels=label_order)
         results['tab_confusion_matrix'] = tab_cm.tolist()
 
         results['tab_balanced_accuracy'] = tab_balanced_acc
         try:
-            results['tab_f1_score'] = f1_score(y_test, tab_pred, pos_label=positive_class, average='binary')
+            results['tab_f1_score'] = f1_score(tab_y_test, tab_pred, pos_label=positive_class, average='binary')
         except:
             results['tab_f1_score'] = None
 
