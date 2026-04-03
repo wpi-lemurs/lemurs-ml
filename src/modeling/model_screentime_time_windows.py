@@ -33,7 +33,7 @@ from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
@@ -123,6 +123,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     hour_cols = [f'hour_{i}' for i in range(time_window)]
     X = data[hour_cols]
     y = data[label_col]
+    # convert labels to binary (0 and 1)
+    y = (y == positive_class).astype(int)
 
     # Determine label order based on target type (for confusion matrix)
     if target_type == 'phq9':
@@ -161,18 +163,16 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
             test_user = groups.iloc[test_idx].iloc[0]
-
-            # Baseline for held-out user: previous survey label predicts current label.
+            # Train baseline model using previous survey label
             baseline_df = data.iloc[test_idx][['survey_timestamp', label_col]].copy()
             baseline_df = baseline_df.sort_values('survey_timestamp')
-            # get label for each user's previous survey
+            # get label for user's previous survey (only one user since it's the test set of LOOCV)
             baseline_df['baseline_pred'] = baseline_df[label_col].shift(1)
             # remove first survey (no data before it to use)
             baseline_df = baseline_df.dropna(subset=['baseline_pred'])
             
-            if not baseline_df.empty:
-                all_baseline_true.extend(baseline_df[label_col].tolist())
-                all_baseline_pred.extend(baseline_df['baseline_pred'].tolist())
+            all_baseline_true.extend(baseline_df[label_col].tolist())
+            all_baseline_pred.extend(baseline_df['baseline_pred'].tolist())
 
             # Skip fold if training or test set has only one class
             if y_train.nunique() < 2:
@@ -198,28 +198,26 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
 
+                # TabPFN (without scaling)
                 tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
                 tab_model.fit(X_train, y_train)
                 tab_pred = tab_model.predict(X_test)
 
                 # XGBoost (without scaling)
-                le = LabelEncoder()
-                y_train_enc = le.fit_transform(y_train)
-                
                 # Calculate scale_pos_weight to handle class imbalance
-                class_counts = pd.Series(y_train_enc).value_counts()
+                class_counts = pd.Series(y_train).value_counts()
                 scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
                 
+                # TODO: Tune hyperparameters (GridSearchCV?)
                 xgb_model = xgb.XGBClassifier(
-                    n_estimators=100, 
-                    max_depth=6, 
-                    learning_rate=0.1, 
+                    n_estimators=600, 
+                    max_depth=5, 
+                    learning_rate=0.05, 
                     scale_pos_weight=scale_pos_weight,
                     random_state=42
                 )
-                xgb_model.fit(X_train, y_train_enc)
-                xgb_pred_enc = xgb_model.predict(X_test)
-                xgb_pred = le.inverse_transform(xgb_pred_enc)
+                xgb_model.fit(X_train, y_train)
+                xgb_pred = xgb_model.predict(X_test)
 
                 # Store predictions and true labels
                 all_lr_preds.extend(lr_pred)
@@ -263,6 +261,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         if len(all_y_test) == 0 or len(all_lr_preds) == 0 or len(all_rf_preds) == 0 or len(all_xgb_preds) == 0 or len(all_tab_preds) == 0:
             return None
 
+        # Convert labels back to original class names for evaluation
+        all_y_test = np.where(np.array(all_y_test) == 1, positive_class, f'not_{positive_class}')
+        all_lr_preds = np.where(np.array(all_lr_preds) == 1, positive_class, f'not_{positive_class}')
+        all_rf_preds = np.where(np.array(all_rf_preds) == 1, positive_class, f'not_{positive_class}')
+        all_xgb_preds = np.where(np.array(all_xgb_preds) == 1, positive_class, f'not_{positive_class}')
+        all_tab_preds = np.where(np.array(all_tab_preds) == 1, positive_class, f'not_{positive_class}')
 
         # Convert to numpy arrays for evaluation
         all_y_test = np.array(all_y_test)
@@ -272,10 +276,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         all_tab_preds = np.array(all_tab_preds)
 
         # Calculate metrics across all folds
-        lr_acc = accuracy_score(all_y_test, all_lr_preds)
-        rf_acc = accuracy_score(all_y_test, all_rf_preds)
-        xgb_acc = accuracy_score(all_y_test, all_xgb_preds)
-        tab_acc = accuracy_score(all_y_test, all_tab_preds)
+        lr_balanced_acc = balanced_accuracy_score(all_y_test, all_lr_preds)
+        rf_balanced_acc = balanced_accuracy_score(all_y_test, all_rf_preds)
+        xgb_balanced_acc = balanced_accuracy_score(all_y_test, all_xgb_preds)
+        tab_balanced_acc = balanced_accuracy_score(all_y_test, all_tab_preds)
 
         # Generate confusion matrices
         lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
@@ -284,10 +288,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         tab_cm = confusion_matrix(all_y_test, all_tab_preds, labels=label_order)
 
         baseline_cm = None
-        baseline_acc = None
+        baseline_balanced_acc = None
         baseline_f1 = None
         if len(all_baseline_true) > 0:
-            baseline_acc = accuracy_score(all_baseline_true, all_baseline_pred)
+            baseline_balanced_acc = balanced_accuracy_score(all_baseline_true, all_baseline_pred)
             baseline_cm = confusion_matrix(all_baseline_true, all_baseline_pred, labels=label_order)
             try:
                 baseline_f1 = f1_score(all_baseline_true, all_baseline_pred, pos_label=positive_class, average='binary')
@@ -304,10 +308,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'cv_method': 'LOOCV',
             'successful_folds': successful_folds,
             'baseline_eval_samples': len(all_baseline_true),
-            'lr_accuracy': lr_acc,
-            'rf_accuracy': rf_acc,
-            'xgb_accuracy': xgb_acc,
-            'tab_accuracy': tab_acc,
+            'lr_balanced_accuracy': lr_balanced_acc,
+            'rf_balanced_accuracy': rf_balanced_acc,
+            'xgb_balanced_accuracy': xgb_balanced_acc,
+            'tab_balanced_accuracy': tab_balanced_acc,
             'lr_confusion_matrix': lr_cm.tolist(),
             'rf_confusion_matrix': rf_cm.tolist(),
             'xgb_confusion_matrix': xgb_cm.tolist(),
@@ -316,7 +320,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
         if baseline_cm is not None:
             results['baseline_confusion_matrix'] = baseline_cm.tolist()
-            results['baseline_accuracy'] = baseline_acc
+            results['baseline_balanced_accuracy'] = baseline_balanced_acc
             results['baseline_f1_score'] = baseline_f1
 
         # Calculate F1 score
@@ -394,12 +398,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
         baseline_true = baseline_df[label_col].values
         baseline_pred = baseline_df['baseline_pred'].values
-        baseline_acc = accuracy_score(baseline_true, baseline_pred)
+        baseline_balanced_acc = balanced_accuracy_score(baseline_true, baseline_pred)
 
         # Generate confusion matrix with explicit label order
         baseline_cm = confusion_matrix(baseline_true, baseline_pred, labels=label_order)
         results['baseline_confusion_matrix'] = baseline_cm.tolist()
-        results['baseline_accuracy'] = baseline_acc
+        results['baseline_balanced_accuracy'] = baseline_balanced_acc
 
         try:
             results['baseline_f1_score'] = f1_score(baseline_true, baseline_pred, pos_label=positive_class, average='binary')
@@ -415,13 +419,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
         lr_model.fit(X_train_scaled, y_train)
         lr_pred = lr_model.predict(X_test_scaled)
-        lr_acc = accuracy_score(y_test, lr_pred)
+        lr_balanced_acc = balanced_accuracy_score(y_test, lr_pred)
 
         # Generate confusion matrix with explicit label order
         lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
         results['lr_confusion_matrix'] = lr_cm.tolist()
 
-        results['lr_accuracy'] = lr_acc
+        results['lr_balanced_accuracy'] = lr_balanced_acc
         try:
             results['lr_f1_score'] = f1_score(y_test, lr_pred, pos_label=positive_class, average='binary')
         except:
@@ -431,13 +435,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
         rf_model.fit(X_train, y_train)
         rf_pred = rf_model.predict(X_test)
-        rf_acc = accuracy_score(y_test, rf_pred)
+        rf_balanced_acc = balanced_accuracy_score(y_test, rf_pred)
 
         # Generate confusion matrix with explicit label order (same as LR above)
         rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
         results['rf_confusion_matrix'] = rf_cm.tolist()
 
-        results['rf_accuracy'] = rf_acc
+        results['rf_balanced_accuracy'] = rf_balanced_acc
         try:
             results['rf_f1_score'] = f1_score(y_test, rf_pred, pos_label=positive_class, average='binary')
         except:
@@ -472,13 +476,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         xgb_model.fit(X_train, y_train_enc)
         xgb_pred_enc = xgb_model.predict(X_test)
         xgb_pred = le.inverse_transform(xgb_pred_enc)
-        xgb_acc = accuracy_score(y_test, xgb_pred)
+        xgb_balanced_acc = balanced_accuracy_score(y_test, xgb_pred)
 
         # Generate confusion matrix with explicit label order
         xgb_cm = confusion_matrix(y_test, xgb_pred, labels=label_order)
         results['xgb_confusion_matrix'] = xgb_cm.tolist()
 
-        results['xgb_accuracy'] = xgb_acc
+        results['xgb_balanced_accuracy'] = xgb_balanced_acc
         try:
             results['xgb_f1_score'] = f1_score(y_test, xgb_pred, pos_label=positive_class, average='binary')
         except:
@@ -488,13 +492,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
         tab_model.fit(X_train, y_train)
         tab_pred = tab_model.predict(X_test)
-        tab_acc = accuracy_score(y_test, tab_pred)
+        tab_balanced_acc = balanced_accuracy_score(y_test, tab_pred)
 
         # Generate confusion matrix with explicit label order
         tab_cm = confusion_matrix(y_test, tab_pred, labels=label_order)
         results['tab_confusion_matrix'] = tab_cm.tolist()
 
-        results['tab_accuracy'] = tab_acc
+        results['tab_balanced_accuracy'] = tab_balanced_acc
         try:
             results['tab_f1_score'] = f1_score(y_test, tab_pred, pos_label=positive_class, average='binary')
         except:
@@ -549,7 +553,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 0], cbar=True)
             # Build title with F1 score if available
-            title = f'Logistic Regression - {time_window}h window\nAccuracy: {result["lr_accuracy"]:.3f}'
+            title = f'Logistic Regression - {time_window}h window\nBalanced Accuracy: {result["lr_balanced_accuracy"]:.3f}'
             if 'lr_f1_score' in result and result['lr_f1_score'] is not None:
                 title += f' | F1: {result["lr_f1_score"]:.3f}'
             axes[idx, 0].set_title(title)
@@ -563,7 +567,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 1], cbar=True)
             # Build title with F1 score if available
-            title = f'Random Forest - {time_window}h window\nAccuracy: {result["rf_accuracy"]:.3f}'
+            title = f'Random Forest - {time_window}h window\nBalanced Accuracy: {result["rf_balanced_accuracy"]:.3f}'
             if 'rf_f1_score' in result and result['rf_f1_score'] is not None:
                 title += f' | F1: {result["rf_f1_score"]:.3f}'
             axes[idx, 1].set_title(title)
@@ -577,7 +581,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 2], cbar=True)
             # Build title with F1 score if available
-            title = f'XGBoost - {time_window}h window\nAccuracy: {result["xgb_accuracy"]:.3f}'
+            title = f'XGBoost - {time_window}h window\nBalanced Accuracy: {result["xgb_balanced_accuracy"]:.3f}'
             if 'xgb_f1_score' in result and result['xgb_f1_score'] is not None:
                 title += f' | F1: {result["xgb_f1_score"]:.3f}'
             axes[idx, 2].set_title(title)
@@ -605,7 +609,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 3], cbar=True)
             # Build title with F1 score if available
-            title = f'TabPFN - {time_window}h window\nAccuracy: {result["tab_accuracy"]:.3f}'
+            title = f'TabPFN - {time_window}h window\nBalanced Accuracy: {result["tab_balanced_accuracy"]:.3f}'
             if 'tab_f1_score' in result and result['tab_f1_score'] is not None:
                 title += f' | F1: {result["tab_f1_score"]:.3f}'
             axes[idx, 3].set_title(title)
@@ -622,20 +626,20 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Also create a summary plot showing only the best performing window
     if all_results:
-        # Find best performing window by f1 score if available, otherwise by accuracy
-        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_f1_score'] if 'lr_f1_score' in all_results[i] and all_results[i]['lr_f1_score'] is not None else all_results[i]['lr_accuracy'])
-        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_f1_score'] if 'rf_f1_score' in all_results[i] and all_results[i]['rf_f1_score'] is not None else all_results[i]['rf_accuracy'])
-        best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_f1_score'] if 'xgb_f1_score' in all_results[i] and all_results[i]['xgb_f1_score'] is not None else all_results[i]['xgb_accuracy'])
+        # Find best performing window by balanced accuracy
+        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_balanced_accuracy'])
+        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_balanced_accuracy'])
+        best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_balanced_accuracy'])
         # has_baseline = all('baseline_accuracy' in r for r in all_results)
         has_baseline = False # TEMPORARY
         if has_baseline:
             best_baseline_idx = max(
                 range(len(all_results)),
-                key=lambda i: all_results[i]['baseline_f1_score']
-                if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None
-                else all_results[i]['baseline_accuracy']
+                key=lambda i: all_results[i]['baseline_balanced_accuracy']
+                if 'baseline_balanced_accuracy' in all_results[i] and all_results[i]['baseline_balanced_accuracy'] is not None
+                else all_results[i]['baseline_accuracy'] #TODO fix for balanced accuracy
             )
-        best_tab_idx = max(range(len(all_results)), key=lambda i: all_results[i]['tab_f1_score'] if 'tab_f1_score' in all_results[i] and all_results[i]['tab_f1_score'] is not None else all_results[i]['tab_accuracy'])
+        best_tab_idx = max(range(len(all_results)), key=lambda i: all_results[i]['tab_balanced_accuracy'])
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
@@ -649,7 +653,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[0], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
-        title = f'Best Logistic Regression\n{best_lr["time_window"]}h window - Accuracy: {best_lr["lr_accuracy"]:.3f}'
+        title = f'Best Logistic Regression\n{best_lr["time_window"]}h window - Balanced Accuracy: {best_lr["lr_balanced_accuracy"]:.3f}'
         if 'lr_f1_score' in best_lr and best_lr['lr_f1_score'] is not None:
             title += f' | F1: {best_lr["lr_f1_score"]:.3f}'
         axes[0].set_title(title, fontsize=12, fontweight='bold')
@@ -663,7 +667,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[1], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
-        title = f'Best Random Forest\n{best_rf["time_window"]}h window - Accuracy: {best_rf["rf_accuracy"]:.3f}'
+        title = f'Best Random Forest\n{best_rf["time_window"]}h window - Balanced Accuracy: {best_rf["rf_balanced_accuracy"]:.3f}'
         if 'rf_f1_score' in best_rf and best_rf['rf_f1_score'] is not None:
             title += f' | F1: {best_rf["rf_f1_score"]:.3f}'
         axes[1].set_title(title, fontsize=12, fontweight='bold')
@@ -677,7 +681,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[2], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
-        title = f'Best XGBoost\n{best_xgb["time_window"]}h window - Accuracy: {best_xgb["xgb_accuracy"]:.3f}'
+        title = f'Best XGBoost\n{best_xgb["time_window"]}h window - Balanced Accuracy: {best_xgb["xgb_balanced_accuracy"]:.3f}'
         if 'xgb_f1_score' in best_xgb and best_xgb['xgb_f1_score'] is not None:
             title += f' | F1: {best_xgb["xgb_f1_score"]:.3f}'
         axes[2].set_title(title, fontsize=12, fontweight='bold')
@@ -692,7 +696,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[3], cbar=True, annot_kws={'size': 14})
             # Build title with F1 score if available
-            title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
+            title = f'Baseline\n{best_baseline["time_window"]}h window - Balanced Accuracy: {best_baseline["baseline_balanced_accuracy"]:.3f}'
             if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
                 title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
             axes[3].set_title(title, fontsize=12, fontweight='bold')
@@ -710,7 +714,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                    xticklabels=labels, yticklabels=labels,
                    ax=axes[3], cbar=True, annot_kws={'size': 14})
         # Build title with F1 score if available
-        title = f'Best TabPFN\n{best_tab["time_window"]}h window - Accuracy: {best_tab["tab_accuracy"]:.3f}'
+        title = f'Best TabPFN\n{best_tab["time_window"]}h window - Balanced Accuracy: {best_tab["tab_balanced_accuracy"]:.3f}'
         if 'tab_f1_score' in best_tab and best_tab['tab_f1_score'] is not None:
             title += f' | F1: {best_tab["tab_f1_score"]:.3f}'
         axes[3].set_title(title, fontsize=12, fontweight='bold')
@@ -815,8 +819,8 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
         display_cols = ['time_window', 'total_samples']
-        # TEMP: for col in ['lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'baseline_accuracy']:
-        for col in ['lr_accuracy', 'rf_accuracy', 'xgb_accuracy', 'tab_accuracy']:
+        # TEMP: for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'baseline_balanced_accuracy']:
+        for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'tab_balanced_accuracy']:
             if col in comparison_df.columns:
                 display_cols.append(col)
         for col in ['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'tab_f1_score']: #TEMP
@@ -825,70 +829,40 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
-        if 'lr_f1_score' in comparison_df.columns and comparison_df['lr_f1_score'].notna().any():
-            best_lr_window = comparison_df.loc[comparison_df['lr_f1_score'].idxmax()]
-            best_rf_window = comparison_df.loc[comparison_df['rf_f1_score'].idxmax()]
-            best_xgb_window = comparison_df.loc[comparison_df['xgb_f1_score'].idxmax()]
-            best_tab_window = comparison_df.loc[comparison_df['tab_f1_score'].idxmax()]
-            
-            print(f"\n" + "="*80)
-            print("BEST PERFORMING TIME WINDOWS")
-            print("="*80)
-            print(f"\nLogistic Regression:")
-            print(f"  Best window: {best_lr_window['time_window']}h")
-            print(f"  F1 Score: {best_lr_window['lr_f1_score']:.4f}")
-            print(f"  Accuracy: {best_lr_window['lr_accuracy']:.4f}")
+        best_lr_window = comparison_df.loc[comparison_df['lr_balanced_accuracy'].idxmax()]
+        best_rf_window = comparison_df.loc[comparison_df['rf_balanced_accuracy'].idxmax()]
+        best_xgb_window = comparison_df.loc[comparison_df['xgb_balanced_accuracy'].idxmax()]
+        best_tab_window = comparison_df.loc[comparison_df['tab_balanced_accuracy'].idxmax()]  
 
-            print(f"\nRandom Forest:")
-            print(f"  Best window: {best_rf_window['time_window']}h")
-            print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
-            print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
+        print(f"\n" + "="*80)
+        print("BEST PERFORMING TIME WINDOWS")
+        print("="*80)
+        print(f"\nLogistic Regression:")
+        print(f"  Best window: {best_lr_window['time_window']}h")
+        print(f"  F1 Score: {best_lr_window['lr_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_lr_window['lr_balanced_accuracy']:.4f}")
 
-            print(f"\nXGBoost:")
-            print(f"  Best window: {best_xgb_window['time_window']}h")
-            print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
-            print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
+        print(f"\nRandom Forest:")
+        print(f"  Best window: {best_rf_window['time_window']}h")
+        print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_rf_window['rf_balanced_accuracy']:.4f}")
 
-            print(f"\nTabPFN:")
-            print(f"  Best window: {best_tab_window['time_window']}h")
-            print(f"  F1 Score: {best_tab_window['tab_f1_score']:.4f}")
-            print(f"  Accuracy: {best_tab_window['tab_accuracy']:.4f}")
+        print(f"\nXGBoost:")
+        print(f"  Best window: {best_xgb_window['time_window']}h")
+        print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_xgb_window['xgb_balanced_accuracy']:.4f}")
 
-            if 'baseline_accuracy' in comparison_df.columns:
-                print(f"\nBaseline Model:")
-                if 'baseline_f1_score' in comparison_df.columns:
-                    print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
-                print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
-        else:
-            best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
-            best_rf_window = comparison_df.loc[comparison_df['rf_accuracy'].idxmax()]
-            best_xgb_window = comparison_df.loc[comparison_df['xgb_accuracy'].idxmax()]
-            best_tab_window = comparison_df.loc[comparison_df['tab_accuracy'].idxmax()]
+        print(f"\nTabPFN:")
+        print(f"  Best window: {best_tab_window['time_window']}h")
+        print(f"  F1 Score: {best_tab_window['tab_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_tab_window['tab_balanced_accuracy']:.4f}")
 
-            print(f"\n" + "="*80)
-            print("BEST PERFORMING TIME WINDOWS (by accuracy)")
-            print("="*80)
-            print(f"\nLogistic Regression:")
-            print(f"  Best window: {best_lr_window['time_window']}h")
-            print(f"  Accuracy: {best_lr_window['lr_accuracy']:.4f}")
-
-            print(f"\nRandom Forest:")
-            print(f"  Best window: {best_rf_window['time_window']}h")
-            print(f"  Accuracy: {best_rf_window['rf_accuracy']:.4f}")
-
-            print(f"\nXGBoost:")
-            print(f"  Best window: {best_xgb_window['time_window']}h")
-            print(f"  Accuracy: {best_xgb_window['xgb_accuracy']:.4f}")
-
-            print(f"\nTabPFN:")
-            print(f"  Best window: {best_tab_window['time_window']}h")
-            print(f"  Accuracy: {best_tab_window['tab_accuracy']:.4f}")
-
-            if 'baseline_accuracy' in comparison_df.columns:
-                print(f"\nBaseline Model:")
-                print(f"  Accuracy: {comparison_df['baseline_accuracy'].max()}")
-
-
+        if 'baseline_balanced_accuracy' in comparison_df.columns:
+            print(f"\nBaseline Model:")
+            if 'baseline_f1_score' in comparison_df.columns:
+                print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
+            print(f"  Balanced Accuracy: {comparison_df['baseline_balanced_accuracy'].max()}")
+        
         # Generate confusion matrix visualizations
         plot_confusion_matrices(all_results, target_type=target_type, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
     else:
