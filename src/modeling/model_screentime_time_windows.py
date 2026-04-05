@@ -1,19 +1,14 @@
 """
 Model training script for mental health prediction using hourly screentime features.
 Experiments with different time windows (n hours before survey) to find optimal prediction window.
-Supports multiple prediction targets:
-- PHQ-9 depression prediction (phq9)
-- Suicide risk prediction (suicide_risk)
-- Self-harm risk prediction (self_harm)
-- Sleep risk prediction (sleep)
-- Negative emotions prediction (negative_emotions)
+Supports all daily labels:
+- phq9 (depression), suicide_risk, self_harm, positive_emotion, negative_emotion
+- social_stress, social_connection, minority_stress, emotion_regulation, sleep
 
 Usage:
     python model_screentime_time_windows.py phq9               # Depression prediction
-    python model_screentime_time_windows.py suicide_risk       # Suicide risk prediction
-    python model_screentime_time_windows.py self_harm          # Self-harm risk prediction
-    python model_screentime_time_windows.py sleep              # Sleep risk prediction
-    python model_screentime_time_windows.py negative_emotions  # Negative emotions prediction
+    python model_screentime_time_windows.py social_connection  # Social connection prediction
+    python model_screentime_time_windows.py negative_emotion   # Negative emotions prediction
 
 Optional flags:
     --propagate, -p   Propagate positive labels to all entries for users with any positive label
@@ -45,6 +40,33 @@ from tabpfn.constants import ModelVersion
 # Use centralized data directory
 data_dir = DATA_DIR
 
+# Available daily labels and their target columns
+AVAILABLE_LABELS = {
+    'suicide_risk': 'suicide_risk_label',
+    'self_harm': 'self_harm_risk_label',
+    'positive_emotion': 'positive_emotion_label',
+    'negative_emotion': 'negative_emotion_label',
+    'social_stress': 'social_stress_label',
+    'social_connection': 'social_connection_label',
+    'minority_stress': 'minority_stress_label',
+    'emotion_regulation': 'emotion_regulation_label',
+    'sleep': 'sleep_label',
+    'phq9': 'severity_label'  # PHQ-9 depression
+}
+
+POSITIVE_CLASS_MAP = {
+    'phq9': 'depressed',
+    'suicide_risk': 'at_risk',
+    'self_harm': 'at_risk',
+    'positive_emotion': 'at_risk',
+    'negative_emotion': 'at_risk',
+    'social_stress': 'at_risk',
+    'social_connection': 'at_risk',
+    'minority_stress': 'at_risk',
+    'emotion_regulation': 'at_risk',
+    'sleep': 'at_risk'
+}
+
 def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
     """
     Train and evaluate models for a specific time window.
@@ -52,9 +74,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     Parameters:
     - data: DataFrame with hourly screentime features and target labels
     - time_window: number of hours before survey (for reporting)
-    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
-                   'self_harm' for self-harm risk, 'sleep' for sleep risk prediction,
-                   or 'negative_emotions' for negative emotions prediction
+    - target_type: target to predict (key from AVAILABLE_LABELS)
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
@@ -67,35 +87,17 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         return None
 
     # Determine label column based on target type
-    if target_type == 'phq9':
-        label_col = 'severity_label'
-        positive_class = 'depressed'
-        output_prefix = 'daily_screentime_phq9'
-        prediction_task = 'Depression'
-    elif target_type == 'suicide_risk':
-        label_col = 'suicide_risk_label'
-        positive_class = 'at_risk'
-        output_prefix = 'daily_screentime_suicide_risk'
-        prediction_task = 'Suicide Risk'
-    elif target_type == 'self_harm':
-        label_col = 'self_harm_risk_label'
-        positive_class = 'at_risk'
-        output_prefix = 'daily_screentime_self_harm'
-        prediction_task = 'Self-Harm Risk'
-    elif target_type == 'sleep':
-        label_col = 'sleep_label'
-        positive_class = 'at_risk'
-        output_prefix = 'daily_screentime_sleep'
-        prediction_task = 'Sleep Risk'
-        # drop N/A risk label rows with afternoon data
-        data = data[data['sleep_label'] != 'N/A']
-    elif target_type == 'negative_emotions':
-        label_col = 'negative_emotion_label'
-        positive_class = 'at_risk'
-        output_prefix = 'daily_screentime_negative_emotions'
-        prediction_task = 'Negative Emotions'
-    else:
-        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
+    if target_type not in AVAILABLE_LABELS:
+        raise ValueError(f"Invalid target_type: {target_type}. Must be one of: {list(AVAILABLE_LABELS.keys())}")
+
+    label_col = AVAILABLE_LABELS[target_type]
+    positive_class = POSITIVE_CLASS_MAP[target_type]
+    output_prefix = f'daily_screentime_{target_type}'
+    prediction_task = target_type.replace('_', ' ').title()
+
+    # Handle sleep label special case (drop N/A)
+    if target_type == 'sleep':
+        data = data[data[label_col] != 'N/A']
 
     class_weight = 'balanced' if balanced_class_weight else None
 
@@ -108,15 +110,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         return None
 
     # Check minimum samples per class
-    class_counts = data[label_col].value_counts()
-    min_class_count = class_counts.min()
-
-    if min_class_count < 2:
+    class_counts = data[label_col].nunique()
+    if class_counts < 2:
         return None
 
     if len(data) < 10:
         return None
-
 
     # Prepare features and labels
     hour_cols = [f'hour_{i}' for i in range(time_window)]
@@ -741,43 +740,35 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
 
     Parameters:
-    - target_type: 'phq9' for depression prediction, 'suicide_risk' for suicide risk,
-                   'self_harm' for self-harm risk, or 'sleep' for sleep risk prediction
+    - target_type: Target to predict. Valid options:
+                   'phq9' (depression), 'suicide_risk', 'self_harm', 'sleep',
+                   'positive_emotion', 'negative_emotion', 'social_stress',
+                   'social_connection', 'minority_stress', 'emotion_regulation'
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
     """
+    # Validate target_type
+    if target_type not in AVAILABLE_LABELS:
+        valid_targets = list(AVAILABLE_LABELS.keys())
+        raise ValueError(
+            f"Invalid target_type: {target_type}. Must be one of: {valid_targets}"
+        )
+
     # Configure based on target type
-    label_column = None  # Initialize to avoid reference before assignment
+    label_column = AVAILABLE_LABELS[target_type]
+    task_name = target_type.replace('_', ' ').upper()
+
+    # Determine if using generic function or PHQ-9 specific function
     if target_type == 'phq9':
-        task_name = "DEPRESSION PREDICTION (PHQ-9)"
         merge_function = merge_daily_screentime_features_with_phq9
         use_generic = False
-    elif target_type == 'suicide_risk':
-        task_name = "SUICIDE RISK PREDICTION"
-        merge_function = None
-        label_column = 'suicide_risk_label'
-        use_generic = True
-    elif target_type == 'self_harm':
-        task_name = "SELF-HARM RISK PREDICTION"
-        merge_function = None
-        label_column = 'self_harm_risk_label'
-        use_generic = True
-    elif target_type == 'sleep':
-        task_name = "SLEEP RISK PREDICTION"
-        merge_function = None
-        label_column = 'sleep_label'
-        use_generic = True
-    elif target_type == 'negative_emotions':
-        task_name = "NEGATIVE EMOTIONS PREDICTION"
-        merge_function = None
-        label_column = 'negative_emotion_label'
-        use_generic = True
     else:
-        raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
+        merge_function = merge_daily_screentime_features_with_risk_labels
+        use_generic = True
 
     print("="*80)
-    print(f"{task_name} - HOURLY SCREENTIME FEATURES")
+    print(f"{task_name} PREDICTION - HOURLY SCREENTIME FEATURES")
     print("Experimenting with different time windows for screentime before surveys...")
     if propagate_labels:
         print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
@@ -791,8 +782,8 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
 
         # Get data for this time window using the appropriate merge function
         if use_generic:
-            # Use the new generic function for risk labels
-            screentime_data = merge_daily_screentime_features_with_risk_labels(
+            # Use the generic function for risk labels
+            screentime_data = merge_function(
                 screentime_df=None,
                 risk_labels_df=None,
                 label_column=label_column,
@@ -889,11 +880,12 @@ if __name__ == '__main__':
     # Parse command line arguments
     if len(sys.argv) > 1:
         target = sys.argv[1].lower()
-        if target in ['phq9', 'suicide_risk', 'self_harm', 'sleep', 'negative_emotions']:
+        valid_targets = list(AVAILABLE_LABELS.keys())
+        if target in valid_targets:
             target_type = target
         else:
             print(f"Invalid target type: {target}")
-            print("Valid options: 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
+            print(f"Valid options: {', '.join(valid_targets)}")
             print("Using default: 'phq9'")
 
     # Check for optional flags
@@ -908,6 +900,6 @@ if __name__ == '__main__':
     if '--loocv' in sys.argv or '-l' in sys.argv:
         use_loocv = True
         print("Leave-One-Out Cross-Validation enabled")
-        
+
     # Run main with parsed arguments
     main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)

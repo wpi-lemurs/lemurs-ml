@@ -165,7 +165,7 @@ class ScreentimeModelPipeline:
                 propagate_labels=self.propagate_labels,
                 use_accurate_method=self.use_accurate_method
             )
-        elif target_type in ['suicide_risk', 'self_harm', 'sleep', 'negative_emotions']:
+        elif target_type in ['suicide_risk', 'self_harm', 'sleep', 'positive_emotion', 'negative_emotion', 'social_stress', 'social_connection', 'minority_stress', 'emotion_regulation']:
             self.data_pipeline = create_screentime_risk_pipeline(
                 target_type=self.target_type,
                 time_windows=self.time_windows,
@@ -174,7 +174,7 @@ class ScreentimeModelPipeline:
                 use_accurate_method=self.use_accurate_method
             )
         else:
-            raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', or 'negative_emotions'")
+            raise ValueError(f"Invalid target_type: {target_type}. Must be 'phq9', 'suicide_risk', 'self_harm', 'sleep', 'positive_emotion', 'negative_emotion', 'social_stress', 'social_connection', 'minority_stress', or 'emotion_regulation'")
 
         # Store results
         self.results_ = {}
@@ -218,7 +218,12 @@ class ScreentimeModelPipeline:
                 'suicide_risk': 'suicide_risk_label',
                 'self_harm': 'self_harm_risk_label',
                 'sleep': 'sleep_label',
-                'negative_emotions': 'negative_emotion_label'
+                'positive_emotion': 'positive_emotion_label',
+                'negative_emotion': 'negative_emotion_label',
+                'social_stress': 'social_stress_label',
+                'social_connection': 'social_connection_label',
+                'minority_stress': 'minority_stress_label',
+                'emotion_regulation': 'emotion_regulation_label'
             }
             return {
                 'label_col': label_col_map[self.target_type],
