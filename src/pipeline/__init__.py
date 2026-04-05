@@ -3,7 +3,7 @@ Scikit-learn Pipeline Package for Mental Health Prediction
 
 This package provides a refactored, modular pipeline architecture for
 mental health prediction using passive data (screentime, health metrics)
-and survey labels (PHQ-9, suicide risk, self-harm, sleep).
+and survey labels (PHQ-9, suicide risk, self-harm, sleep, etc.).
 
 Main Components:
 ----------------

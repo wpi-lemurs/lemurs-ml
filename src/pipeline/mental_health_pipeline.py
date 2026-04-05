@@ -57,7 +57,9 @@ def create_screentime_risk_pipeline(
     Parameters:
     -----------
     target_type : str, default='suicide_risk'
-        Target to predict: 'suicide_risk', 'self_harm', 'sleep', 'social_connection', or 'negative_emotions'
+        Target to predict: 'phq9', 'suicide_risk', 'self_harm', 'positive_emotion',
+        'negative_emotion', 'social_stress', 'social_connection', 'minority_stress',
+        or 'emotion_regulation'
     time_windows : list of int, default=[3, 6, 9, 12]
         Hours before survey to use for features
     fill_method : str or None, default='zero'
@@ -365,7 +367,9 @@ def get_pipeline_for_task(
     -----------
     task : str
         Task name: 'screentime_suicide_risk', 'screentime_self_harm',
-        'screentime_sleep', 'screentime_phq9', 'health_weekly'
+        'screentime_sleep', 'screentime_positive_emotion', 'screentime_negative_emotion',
+        'screentime_social_stress', 'screentime_social_connection', 'screentime_minority_stress',
+        'screentime_emotion_regulation', 'screentime_phq9', or 'health_weekly'
     **kwargs : dict
         Additional arguments to pass to the pipeline constructor
 
@@ -391,6 +395,24 @@ def get_pipeline_for_task(
             'screentime_sleep': lambda: create_screentime_risk_pipeline(
                 target_type='sleep', **kwargs
             ),
+            'screentime_positive_emotion': lambda: create_screentime_risk_pipeline(
+                target_type='positive_emotion', **kwargs
+            ),
+            'screentime_negative_emotion': lambda: create_screentime_risk_pipeline(
+                target_type='negative_emotion', **kwargs
+            ),
+            'screentime_social_stress': lambda: create_screentime_risk_pipeline(
+                target_type='social_stress', **kwargs
+            ),
+            'screentime_social_connection': lambda: create_screentime_risk_pipeline(
+                target_type='social_connection', **kwargs
+            ),
+            'screentime_minority_stress': lambda: create_screentime_risk_pipeline(
+                target_type='minority_stress', **kwargs
+            ),
+            'screentime_emotion_regulation': lambda: create_screentime_risk_pipeline(
+                target_type='emotion_regulation', **kwargs
+            ),
             'screentime_phq9': lambda: create_screentime_phq9_pipeline(**kwargs),
         }
 
@@ -398,7 +420,9 @@ def get_pipeline_for_task(
         raise ValueError(
             f"Unknown task: {task}. "
             f"Available tasks: screentime_suicide_risk, screentime_self_harm, "
-            f"screentime_sleep, screentime_phq9, health_weekly"
+            f"screentime_sleep, screentime_positive_emotion, screentime_negative_emotion, "
+            f"screentime_social_stress, screentime_social_connection, screentime_minority_stress, "
+            f"screentime_emotion_regulation, screentime_phq9, health_weekly"
         )
 
     return task_map[task]()
