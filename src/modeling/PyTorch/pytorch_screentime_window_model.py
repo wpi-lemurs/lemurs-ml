@@ -546,13 +546,13 @@ def train_one_window(
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
         # Confusion matrix plot with a dedicated metrics panel to keep everything centered.
-        fig = plt.figure(figsize=(5, 5))
+        fig = plt.figure(figsize=(6, 6))
         gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
         ax = fig.add_subplot(gs[0, 0])
         metrics_ax = fig.add_subplot(gs[1, 0])
 
         im = ax.imshow(cm, cmap="Blues")
-        ax.set_title(f"Confusion Matrix — {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
+        ax.set_title(f"Confusion Matrix: {target_type} ({tag})", fontsize=11, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
         ax.set_xticks([0, 1])
@@ -671,7 +671,7 @@ def run_experiment(
 
 if __name__ == "__main__":
     run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "sleep"),
+        target_type=os.getenv("TARGET_TYPE", "social_connection"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         use_accurate_method=True,
