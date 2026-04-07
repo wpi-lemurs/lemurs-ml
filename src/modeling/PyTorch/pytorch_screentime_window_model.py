@@ -42,7 +42,7 @@ def _select_pipeline(
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
+            use_accurate_method=True,
             standardized=standardized,
         )
 
@@ -50,13 +50,13 @@ def _select_pipeline(
         return create_screentime_phq9_pipeline(
             time_windows=list(time_windows),
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
+            use_accurate_method=True,
         )
     return create_screentime_risk_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
-        use_accurate_method=use_accurate_method,
+        use_accurate_method=True,
     )
 
 
@@ -178,6 +178,11 @@ def _binary_metrics_from_cm(cm: np.ndarray) -> Tuple[float, float]:
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     return sensitivity, specificity
+
+
+def _balanced_accuracy_from_sens_spec(sensitivity: float, specificity: float) -> float:
+    """Compute balanced accuracy from sensitivity and specificity."""
+    return (sensitivity + specificity) / 2.0
 
 
 def _mean_variable_length_sequences(sequences: List[List[float]]) -> List[float]:
@@ -343,6 +348,7 @@ def train_one_window(
     cm = None
     sensitivity = float("nan")
     specificity = float("nan")
+    balanced_accuracy = float("nan")
     successful_folds = 1
     acc = float("nan")
     f1 = float("nan")
@@ -371,6 +377,11 @@ def train_one_window(
         fold_best_epochs = []
         fold_epochs_ran = []
         fold_stopped_early = []
+        fold_accs = []
+        fold_f1s = []
+        fold_sensitivities = []
+        fold_specificities = []
+        fold_balanced_accuracies = []
         successful_folds = 0
 
         for train_idx, test_idx in logo.split(X_cv, y_cv, groups_cv):
@@ -441,9 +452,20 @@ def train_one_window(
 
             fold_acc = accuracy_score(fold_result["targets"], fold_result["preds"])
             fold_f1 = f1_score(fold_result["targets"], fold_result["preds"], zero_division=0)
+            fold_cm = confusion_matrix(fold_result["targets"], fold_result["preds"], labels=[0, 1])
+            fold_sensitivity, fold_specificity = _binary_metrics_from_cm(fold_cm)
+            fold_balanced_accuracy = _balanced_accuracy_from_sens_spec(fold_sensitivity, fold_specificity)
+
+            fold_accs.append(fold_acc)
+            fold_f1s.append(fold_f1)
+            fold_sensitivities.append(fold_sensitivity)
+            fold_specificities.append(fold_specificity)
+            fold_balanced_accuracies.append(fold_balanced_accuracy)
+
             print(
                 f"LOOCV fold {successful_folds} - "
                 f"acc={fold_acc:.3f} f1={fold_f1:.3f} "
+                f"bal_acc={fold_balanced_accuracy:.3f} "
                 f"best_epoch={fold_result['best_epoch']} ran={fold_result['epochs_ran']}"
             )
 
@@ -452,10 +474,15 @@ def train_one_window(
 
         preds = np.concatenate(all_preds)
         targets = np.concatenate(all_targets)
-        acc = accuracy_score(targets, preds)
-        f1 = f1_score(targets, preds, zero_division=0)
+        # Scalar metrics use mean across LOOCV folds (macro over folds).
+        acc = float(np.mean(fold_accs))
+        f1 = float(np.mean(fold_f1s))
+        sensitivity = float(np.mean(fold_sensitivities))
+        specificity = float(np.mean(fold_specificities))
+        balanced_accuracy = float(np.mean(fold_balanced_accuracies))
+
+        # Keep confusion matrix from concatenated predictions for overall visualization.
         cm = confusion_matrix(targets, preds, labels=[0, 1])
-        sensitivity, specificity = _binary_metrics_from_cm(cm)
 
         train_losses = _mean_variable_length_sequences(fold_train_losses)
         val_losses = _mean_variable_length_sequences(fold_val_losses)
@@ -464,7 +491,7 @@ def train_one_window(
         stopped_early = bool(np.any(fold_stopped_early))
         print(
             f"LOOCV aggregate - acc={acc:.3f} f1={f1:.3f} "
-            f"sens={sensitivity:.3f} spec={specificity:.3f} folds={successful_folds} "
+            f"sens={sensitivity:.3f} spec={specificity:.3f} bal_acc={balanced_accuracy:.3f} folds={successful_folds} "
             f"avg_best_epoch={best_epoch} avg_epochs_ran={epochs_ran}"
         )
     else:
@@ -503,11 +530,12 @@ def train_one_window(
         f1 = f1_score(targets, preds, zero_division=0)
         cm = confusion_matrix(targets, preds, labels=[0, 1])
         sensitivity, specificity = _binary_metrics_from_cm(cm)
+        balanced_accuracy = _balanced_accuracy_from_sens_spec(sensitivity, specificity)
         for epoch, (train_loss, val_loss) in enumerate(zip(train_losses, val_losses), start=1):
             print(
                 f"Epoch {epoch}/{epochs_ran} - "
                 f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-                f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
+                f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f} bal_acc={balanced_accuracy:.3f}"
             )
         print(
             f"Early stopping - best_epoch={best_epoch} epochs_ran={epochs_ran} stopped_early={stopped_early}"
@@ -517,10 +545,14 @@ def train_one_window(
         os.makedirs(plots_dir, exist_ok=True)
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
-        # Confusion matrix plot
-        fig, ax = plt.subplots(figsize=(5, 4))
+        # Confusion matrix plot with a dedicated metrics panel to keep everything centered.
+        fig = plt.figure(figsize=(6, 6))
+        gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
+        ax = fig.add_subplot(gs[0, 0])
+        metrics_ax = fig.add_subplot(gs[1, 0])
+
         im = ax.imshow(cm, cmap="Blues")
-        ax.set_title(f"Confusion Matrix — {target_type} ({tag})", fontsize=12)
+        ax.set_title(f"Confusion Matrix: {target_type} ({tag})", fontsize=11, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
         ax.set_xticks([0, 1])
@@ -528,16 +560,20 @@ def train_one_window(
         ax.set_xticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
         ax.set_yticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
         for (i, j), v in np.ndenumerate(cm):
-            ax.text(j, i, str(v), ha="center", va="center", fontsize=9)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        fig.text(
-            0.5,
-            0.02,
-            f"F1: {f1:.3f}   Sensitivity: {sensitivity:.3f}   Specificity: {specificity:.3f}",
-            ha="center",
-            fontsize=10,
+            ax.text(j, i, str(v), ha="center", va="center", fontsize=10)
+
+        # Keep colorbar close without pushing the matrix to the right.
+        cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+        cbar.ax.tick_params(labelsize=8)
+
+        metrics_ax.axis("off")
+        metrics_text = (
+            f"F1: {f1:.3f}    Sensitivity: {sensitivity:.3f}\n"
+            f"Specificity: {specificity:.3f}    Balanced Accuracy: {balanced_accuracy:.3f}"
         )
-        fig.tight_layout(rect=[0, 0.05, 1, 0.97])
+        metrics_ax.text(0.5, 0.5, metrics_text, ha="center", va="center", fontsize=10)
+
+        fig.subplots_adjust(left=0.10, right=0.86, top=0.90, bottom=0.09)
         plt.savefig(os.path.join(plots_dir, f"confusion_matrix_{tag}.png"), dpi=200)
         plt.close(fig)
 
@@ -562,6 +598,7 @@ def train_one_window(
         "val_f1": f1,
         "sensitivity": sensitivity,
         "specificity": specificity,
+        "balanced_accuracy": balanced_accuracy,
         "use_loocv": use_loocv,
         "successful_folds": successful_folds,
         "best_epoch": best_epoch,
@@ -577,7 +614,7 @@ def run_experiment(
     target_type: str = "social_connection",
     time_windows: Iterable[int] = (3, 6, 9, 12),
     propagate_labels: bool = False,
-    use_accurate_method: bool = False,
+    use_accurate_method: bool = True,
     hidden_layers: Iterable[int] = (128, 64),
     weight_decay: float = 1e-4,
     use_weighted_sampler: bool = True,
@@ -592,6 +629,7 @@ def run_experiment(
     early_stopping_min_delta: float = 1e-4,
     min_epochs: int = 5,
 ):
+    # use_accurate_method is deprecated; app-table screentime is always used.
     pipeline = _select_pipeline(
         target_type,
         time_windows,
@@ -636,7 +674,7 @@ if __name__ == "__main__":
         target_type=os.getenv("TARGET_TYPE", "social_connection"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
-        use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "true").lower() == "true",
+        use_accurate_method=True,
         hidden_layers=(128, 64),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
