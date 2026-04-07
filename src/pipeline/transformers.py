@@ -18,6 +18,8 @@ from src.categorization.daily_questions_categorization import get_daily_labels_d
 from src.data_processing.merge_passive_data_and_labels import (
     merge_daily_screentime_features_with_phq9,
     merge_daily_screentime_features_with_risk_labels,
+    merge_daily_step_features_with_phq9,
+    merge_daily_step_features_with_risk_labels,
     propagate_positive_labels
 )
 
@@ -427,6 +429,60 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                 return merged_dict
             else:
                 raise NotImplementedError("Weekly health-risk merge not yet wrapped")
+
+
+class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
+    """Merges hourly step-window features with PHQ-9 or daily risk labels."""
+
+    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False):
+        self.target_type = target_type
+        self.time_windows = time_windows
+        self.propagate_labels = propagate_labels
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X=None):
+        if not self.time_windows:
+            raise NotImplementedError("Step merger currently supports time-window features only")
+
+        merged_dict = {}
+
+        if self.target_type == 'phq9':
+            for window in self.time_windows:
+                merged = merge_daily_step_features_with_phq9(hours_before_survey=window)
+                if self.propagate_labels and not merged.empty:
+                    merged = propagate_positive_labels(merged, 'severity_label', 'depressed')
+                merged_dict[window] = merged
+            return merged_dict
+
+        label_col_map = {
+            'suicide_risk': 'suicide_risk_label',
+            'self_harm': 'self_harm_risk_label',
+            'sleep': 'sleep_label',
+            'positive_emotion': 'positive_emotion_label',
+            'negative_emotion': 'negative_emotion_label',
+            'social_stress': 'social_stress_label',
+            'social_connection': 'social_connection_label',
+            'minority_stress': 'minority_stress_label',
+            'emotion_regulation': 'emotion_regulation_label'
+        }
+        label_col = label_col_map.get(self.target_type)
+        if label_col is None:
+            raise ValueError(f"Unknown target_type: {self.target_type}")
+
+        for window in self.time_windows:
+            merged = merge_daily_step_features_with_risk_labels(
+                label_column=label_col,
+                hours_before_survey=window,
+            )
+            if self.target_type == 'sleep' and not merged.empty:
+                merged = merged[merged['sleep_label'] != 'N/A']
+            if self.propagate_labels and not merged.empty:
+                merged = propagate_positive_labels(merged, label_col, 'at_risk')
+            merged_dict[window] = merged
+
+        return merged_dict
 
 
 class FeatureSelector(BaseEstimator, TransformerMixin):
