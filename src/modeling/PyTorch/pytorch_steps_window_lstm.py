@@ -129,8 +129,10 @@ def _mean_variable_length_sequences(sequences: List[List[float]]) -> List[float]
 
 
 class StepLSTMClassifier(nn.Module):
-    def __init__(self, input_size=1, hidden_size=64, num_layers=1, dropout=0.2):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=1, dropout=0.2, debug_shapes=True):
         super().__init__()
+        self.debug_shapes = debug_shapes
+        self._shape_debug_logged = False
         effective_dropout = dropout if num_layers > 1 else 0.0
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -145,7 +147,12 @@ class StepLSTMClassifier(nn.Module):
         )
 
     def forward(self, x):
+        if self.debug_shapes and not self._shape_debug_logged:
+            print(f"[LSTM DEBUG] Input shape before LSTM: {tuple(x.shape)}")
         out, _ = self.lstm(x)
+        if self.debug_shapes and not self._shape_debug_logged:
+            print(f"[LSTM DEBUG] Output shape after LSTM: {tuple(out.shape)}")
+            self._shape_debug_logged = True
         last_hidden = out[:, -1, :]
         return self.classifier(last_hidden)
 
@@ -169,6 +176,7 @@ def _train_evaluate_split(
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
+    debug_shapes=True,
 ):
     if X_early_stop is None:
         X_early_stop = X_eval
@@ -179,6 +187,7 @@ def _train_evaluate_split(
         hidden_size=hidden_size,
         num_layers=num_layers,
         dropout=dropout,
+        debug_shapes=debug_shapes,
     ).to(device)
 
     class_weights = _compute_class_weights(y_train)
@@ -289,6 +298,7 @@ def train_one_window(
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
+    debug_shapes=True,
 ):
     X, y, classes, row_index, seq_cols = _prepare_step_sequences_labels(df, target_type)
     if X.size == 0 or y.size == 0:
@@ -375,6 +385,7 @@ def train_one_window(
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
+                debug_shapes=debug_shapes,
             )
 
             successful_folds += 1
@@ -441,6 +452,7 @@ def train_one_window(
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             min_epochs=min_epochs,
+            debug_shapes=debug_shapes,
         )
 
         model = split_result["model"]
@@ -460,13 +472,13 @@ def train_one_window(
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
 
-        fig = plt.figure(figsize=(7.2, 5.4))
+        fig = plt.figure(figsize=(5.5, 5.5))
         gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
         ax = fig.add_subplot(gs[0, 0])
         metrics_ax = fig.add_subplot(gs[1, 0])
 
         im = ax.imshow(cm, cmap="Blues")
-        ax.set_title(f"Confusion Matrix - LSTM {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
+        ax.set_title(f"Confusion Matrix: LSTM {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
         ax.set_xticks([0, 1])
@@ -534,6 +546,7 @@ def run_experiment(
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
+    debug_shapes=False,
 ):
     pipeline = _select_pipeline(
         target_type=target_type,
@@ -569,6 +582,7 @@ def run_experiment(
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
+                debug_shapes=debug_shapes,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Window {window}h failed: {exc}")
@@ -642,10 +656,11 @@ if __name__ == "__main__":
         dropout=float(os.getenv("DROPOUT", "0.2")),
         lr=float(os.getenv("LEARNING_RATE", "0.001")),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
-        use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
+        use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
         epochs=int(os.getenv("EPOCHS", "20")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
         use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
+        debug_shapes=os.getenv("DEBUG_SHAPES", "true").lower() == "true",
     )
     print_summary(results)
 

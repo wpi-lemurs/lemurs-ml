@@ -434,10 +434,13 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
 class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
     """Merges hourly step-window features with PHQ-9 or daily risk labels."""
 
-    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False):
+    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False,
+                 standardized=True, reference_hour=9):
         self.target_type = target_type
         self.time_windows = time_windows
         self.propagate_labels = propagate_labels
+        self.standardized = standardized
+        self.reference_hour = reference_hour
 
     def fit(self, X, y=None):
         return self
@@ -450,7 +453,11 @@ class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
 
         if self.target_type == 'phq9':
             for window in self.time_windows:
-                merged = merge_daily_step_features_with_phq9(hours_before_survey=window)
+                merged = merge_daily_step_features_with_phq9(
+                    hours_before_survey=window,
+                    standardized=self.standardized,
+                    reference_hour=self.reference_hour,
+                )
                 if self.propagate_labels and not merged.empty:
                     merged = propagate_positive_labels(merged, 'severity_label', 'depressed')
                 merged_dict[window] = merged
@@ -475,6 +482,8 @@ class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
             merged = merge_daily_step_features_with_risk_labels(
                 label_column=label_col,
                 hours_before_survey=window,
+                standardized=self.standardized,
+                reference_hour=self.reference_hour,
             )
             if self.target_type == 'sleep' and not merged.empty:
                 merged = merged[merged['sleep_label'] != 'N/A']
