@@ -37,6 +37,7 @@ from src.pipeline.transformers import (
     HealthDataProcessor,
     LabelExtractor,
     FeatureLabelMerger,
+    StepFeatureLabelMerger,
     SubWindowFeatureLabelMerger,
     ScreentimeAppCategorizer
 )
@@ -138,6 +139,41 @@ def create_screentime_phq9_pipeline(
     ]
 
     return Pipeline(steps)
+
+
+def create_step_risk_pipeline(
+    target_type='suicide_risk',
+    time_windows=None,
+    propagate_labels=False,
+):
+    """Create a pipeline for risk prediction using step windows before survey time."""
+    if time_windows is None:
+        time_windows = [3, 6, 9, 12]
+
+    return Pipeline([
+        ('merge_features_labels', StepFeatureLabelMerger(
+            target_type=target_type,
+            time_windows=time_windows,
+            propagate_labels=propagate_labels,
+        ))
+    ])
+
+
+def create_step_phq9_pipeline(
+    time_windows=None,
+    propagate_labels=False,
+):
+    """Create a pipeline for PHQ-9 prediction using step windows before survey time."""
+    if time_windows is None:
+        time_windows = [3, 6, 9, 12]
+
+    return Pipeline([
+        ('merge_features_labels', StepFeatureLabelMerger(
+            target_type='phq9',
+            time_windows=time_windows,
+            propagate_labels=propagate_labels,
+        ))
+    ])
 
 
 def create_health_weekly_pipeline(
