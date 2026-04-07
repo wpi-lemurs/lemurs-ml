@@ -135,11 +135,11 @@ class ScreentimeProcessor(BaseEstimator, TransformerMixin):
         Filter to specific user ID, or -1 for all users
     date_range : tuple or None, default=None
         Optional (start_date, end_date) tuple for filtering
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
-    def __init__(self, fill_method=None, app_user_id=-1, date_range=None, use_accurate_method=False):
+    def __init__(self, fill_method=None, app_user_id=-1, date_range=None, use_accurate_method=True):
         self.fill_method = fill_method
         self.app_user_id = app_user_id
         self.date_range = date_range
@@ -184,7 +184,7 @@ class ScreentimeProcessor(BaseEstimator, TransformerMixin):
             fill_method=self.fill_method,
             app_user_id=self.app_user_id,
             date_range=self.date_range,
-            use_accurate_method=self.use_accurate_method
+            use_accurate_method=True
         )
 
         return hourly_data
@@ -344,11 +344,11 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
         If None, uses weekly aggregation for PHQ9
     propagate_labels : bool, default=False
         Whether to propagate positive labels to all user entries
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
-    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False, use_accurate_method=False):
+    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False, use_accurate_method=True):
         self.target_type = target_type
         self.time_windows = time_windows
         self.propagate_labels = propagate_labels
@@ -379,7 +379,7 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                 for window in self.time_windows:
                     merged = merge_daily_screentime_features_with_phq9(
                         hours_before_survey=window,
-                        use_accurate_method=self.use_accurate_method
+                        use_accurate_method=True
                     )
                     if self.propagate_labels and not merged.empty:
                         merged = propagate_positive_labels(
@@ -412,7 +412,7 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                     merged = merge_daily_screentime_features_with_risk_labels(
                         label_column=label_col,
                         hours_before_survey=window,
-                        use_accurate_method=self.use_accurate_method
+                        use_accurate_method=True
                     )
 
                     # Filter out N/A labels for sleep (afternoon surveys without sleep data)
@@ -644,8 +644,8 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         Size of each sub-window in hours
     propagate_labels : bool, default=False
         Whether to propagate positive labels to all user entries
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
     def __init__(self, target_type='suicide_risk', lookback_hours=12,
@@ -701,7 +701,7 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         if self.target_type == 'phq9':
             hourly_features = merge_daily_screentime_features_with_phq9(
                 hours_before_survey=self.lookback_hours,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
             if self.standardized and not hourly_features.empty:
                 if 'survey_timestamp' in hourly_features.columns:
@@ -730,7 +730,7 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             hourly_features = merge_daily_screentime_features_with_risk_labels(
                 label_column=label_col,
                 hours_before_survey=self.lookback_hours,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
             if self.standardized and not hourly_features.empty:
                 if 'survey_timestamp' in hourly_features.columns:
