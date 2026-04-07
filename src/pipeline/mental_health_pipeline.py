@@ -145,6 +145,8 @@ def create_step_risk_pipeline(
     target_type='suicide_risk',
     time_windows=None,
     propagate_labels=False,
+    standardized=True,
+    reference_hour=9,
 ):
     """Create a pipeline for risk prediction using step windows before survey time."""
     if time_windows is None:
@@ -155,6 +157,8 @@ def create_step_risk_pipeline(
             target_type=target_type,
             time_windows=time_windows,
             propagate_labels=propagate_labels,
+            standardized=standardized,
+            reference_hour=reference_hour,
         ))
     ])
 
@@ -162,6 +166,8 @@ def create_step_risk_pipeline(
 def create_step_phq9_pipeline(
     time_windows=None,
     propagate_labels=False,
+    standardized=True,
+    reference_hour=9,
 ):
     """Create a pipeline for PHQ-9 prediction using step windows before survey time."""
     if time_windows is None:
@@ -172,6 +178,8 @@ def create_step_phq9_pipeline(
             target_type='phq9',
             time_windows=time_windows,
             propagate_labels=propagate_labels,
+            standardized=standardized,
+            reference_hour=reference_hour,
         ))
     ])
 

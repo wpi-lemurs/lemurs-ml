@@ -627,7 +627,8 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
 
 
 def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_column,
-                                           fill_method='zero', hours_before_survey=24):
+                                           fill_method='zero', hours_before_survey=24,
+                                           standardized=True, reference_hour=9):
     """
     Generic helper function to merge daily features (hourly time windows) with risk labels.
 
@@ -640,6 +641,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
     - label_column: name of the risk label column (e.g., 'suicide_risk_label', 'self_harm_risk_label', 'sleep_label')
     - fill_method: method to fill null values in hourly features (default 'zero')
     - hours_before_survey: number of hours before a survey to look back for data (default 24)
+    - standardized: if True, use a fixed daily reference hour for all users (default False)
+    - reference_hour: anchor hour used when standardized=True (default 9)
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -690,6 +693,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
         # For each survey, look back n hours
         for _, survey_row in user_surveys.iterrows():
             survey_time = survey_row['timestamp']
+            if standardized:
+                survey_time = survey_time.normalize() + pd.Timedelta(hours=reference_hour)
             lookback_start = survey_time - pd.Timedelta(hours=hours_before_survey)
 
             # Get data in the lookback window
@@ -807,6 +812,8 @@ def merge_daily_step_features_with_risk_labels(
     hours_before_survey=24,
     app_user_id=-1,
     date_range=None,
+    standardized=True,
+    reference_hour=9,
 ):
     """
     Merge hourly step windows (last n hours before survey) with a selected daily risk label.
@@ -839,6 +846,8 @@ def merge_daily_step_features_with_risk_labels(
         label_column,
         fill_method=fill_method,
         hours_before_survey=hours_before_survey,
+        standardized=standardized,
+        reference_hour=reference_hour,
     )
 
 
@@ -849,6 +858,8 @@ def merge_daily_step_features_with_phq9(
     hours_before_survey=24,
     app_user_id=-1,
     date_range=None,
+    standardized=True,
+    reference_hour=9,
 ):
     """
     Merge hourly step windows (last n hours before survey) with PHQ-9 labels.
@@ -893,6 +904,8 @@ def merge_daily_step_features_with_phq9(
 
         for _, survey_row in user_surveys.iterrows():
             survey_time = survey_row['timestamp']
+            if standardized:
+                survey_time = survey_time.normalize() + pd.Timedelta(hours=reference_hour)
             lookback_start = survey_time - pd.Timedelta(hours=hours_before_survey)
             window_data = user_steps[
                 (user_steps['datetime'] >= lookback_start) &
