@@ -546,7 +546,7 @@ def train_one_window(
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
         # Confusion matrix plot with a dedicated metrics panel to keep everything centered.
-        fig = plt.figure(figsize=(7, 5))
+        fig = plt.figure(figsize=(5, 5))
         gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
         ax = fig.add_subplot(gs[0, 0])
         metrics_ax = fig.add_subplot(gs[1, 0])
