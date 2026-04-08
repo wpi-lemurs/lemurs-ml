@@ -814,6 +814,7 @@ def merge_daily_step_features_with_risk_labels(
     date_range=None,
     standardized=True,
     reference_hour=9,
+    average_shared_labels=False,
 ):
     """
     Merge hourly step windows (last n hours before survey) with a selected daily risk label.
@@ -838,7 +839,7 @@ def merge_daily_step_features_with_risk_labels(
     hourly_steps_only = hourly_data[['app_user_id', 'datetime', 'hourly_steps']].copy()
 
     if risk_labels_df is None:
-        risk_labels_df = daily_labels_data
+        risk_labels_df = get_daily_labels_dataframe(average_shared_labels=average_shared_labels)
 
     return _merge_daily_features_with_risk_labels(
         hourly_steps_only,

@@ -147,6 +147,7 @@ def create_step_risk_pipeline(
     propagate_labels=False,
     standardized=True,
     reference_hour=9,
+    average_shared_labels=False,
 ):
     """Create a pipeline for risk prediction using step windows before survey time."""
     if time_windows is None:
@@ -159,6 +160,7 @@ def create_step_risk_pipeline(
             propagate_labels=propagate_labels,
             standardized=standardized,
             reference_hour=reference_hour,
+            average_shared_labels=average_shared_labels,
         ))
     ])
 
