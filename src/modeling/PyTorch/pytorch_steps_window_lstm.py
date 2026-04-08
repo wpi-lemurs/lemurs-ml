@@ -28,6 +28,7 @@ def _select_pipeline(
     target_type: str,
     time_windows: Iterable[int],
     propagate_labels: bool,
+    average_shared_labels: bool = True,
 ):
     if target_type == "phq9":
         return create_step_phq9_pipeline(
@@ -38,6 +39,7 @@ def _select_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
+        average_shared_labels=average_shared_labels,
     )
 
 
@@ -533,6 +535,7 @@ def run_experiment(
     target_type="sleep",
     time_windows=(24),
     propagate_labels=False,
+    average_shared_labels=False,
     hidden_size=64,
     num_layers=1,
     dropout=0.2,
@@ -552,6 +555,7 @@ def run_experiment(
         target_type=target_type,
         time_windows=time_windows,
         propagate_labels=propagate_labels,
+        average_shared_labels=average_shared_labels,
     )
 
     pipeline.fit(None)
@@ -648,9 +652,10 @@ def print_summary(results: Dict[int, dict]):
 
 if __name__ == "__main__":
     results = run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "self_harm"),
+        target_type=os.getenv("TARGET_TYPE", "sleep"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
+        average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "false").lower() == "true",
         hidden_size=int(os.getenv("HIDDEN_SIZE", "16")),
         num_layers=int(os.getenv("NUM_LAYERS", "2")),
         dropout=float(os.getenv("DROPOUT", "0.2")),
