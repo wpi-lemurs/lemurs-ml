@@ -8,140 +8,73 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from sklearn.model_selection import LeaveOneGroupOut, train_test_split
-from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.pipeline.mental_health_pipeline import (
-    create_screentime_phq9_pipeline,
-    create_screentime_risk_pipeline,
-    create_subwindow_pipeline,
+    create_step_phq9_pipeline,
+    create_step_risk_pipeline,
 )
-from src.pipeline.transformers import FeatureSelector, LabelEncoder
+from src.pipeline.transformers import LabelEncoder
 
-# Fixed seeds for reproducibility
+
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
 
-# Using the prexisting scikitlearn pipeline class
+
 def _select_pipeline(
     target_type: str,
     time_windows: Iterable[int],
     propagate_labels: bool,
-    use_accurate_method: bool,
-    use_subwindows: bool,
-    lookback_hours: int,
-    subwindow_hours: int,
-    standardized: bool,
 ):
-    if use_subwindows:
-        return create_subwindow_pipeline(
-            target_type=target_type,
-            lookback_hours=lookback_hours,
-            subwindow_hours=subwindow_hours,
-            propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
-            standardized=standardized,
-        )
-
     if target_type == "phq9":
-        return create_screentime_phq9_pipeline(
+        return create_step_phq9_pipeline(
             time_windows=list(time_windows),
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
         )
-    return create_screentime_risk_pipeline(
+    return create_step_risk_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
-        use_accurate_method=use_accurate_method,
     )
 
 
-def _prepare_features_labels(df, target_type: str) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], pd.Index]:
-    # Drop rows with missing target
+def _prepare_step_sequences_labels(
+    df: pd.DataFrame,
+    target_type: str,
+) -> Tuple[np.ndarray, np.ndarray, List[str], pd.Index, List[str]]:
     df = df.copy()
+
     label_encoder = LabelEncoder(target_type=target_type)
     label_encoder.fit(df)
-    label_series = label_encoder.transform(df)
-    if label_series is None:
-        return np.array([]), np.array([]), [], [], pd.Index([])
-    df = df.loc[label_series.notna()]
-    label_series = label_series.loc[label_series.notna()]
+    y_series = label_encoder.transform(df)
+    if y_series is None:
+        return np.array([]), np.array([]), [], pd.Index([]), []
 
-    selector = FeatureSelector()
-    selector.fit(df)
-    feature_df = selector.transform(df)
+    valid_mask = y_series.notna()
+    df = df.loc[valid_mask].copy()
+    y_series = y_series.loc[valid_mask]
 
-    # Separate column types
-    datetime_cols = feature_df.select_dtypes(include=["datetime64[ns]"]).columns
-    cat_cols = feature_df.select_dtypes(include=["object", "category", "bool"]).columns
+    hour_cols = [c for c in df.columns if c.startswith("hour_")]
+    if not hour_cols:
+        return np.array([]), np.array([]), [], pd.Index([]), []
 
-    # Remove datetimes (they cannot be fed directly to the model)
-    feature_df = feature_df.drop(columns=list(datetime_cols), errors="ignore")
+    hour_cols = sorted(hour_cols, key=lambda x: int(x.split("_")[1]))
+    seq_cols = list(reversed(hour_cols))  # oldest -> newest
 
-    # One-hot encode categoricals (keep all levels, fill missing with explicit token)
-    if len(cat_cols) > 0:
-        feature_df[cat_cols] = feature_df[cat_cols].fillna("<missing>")
-        feature_df = pd.get_dummies(feature_df, columns=list(cat_cols), dtype=float)
+    X_2d = df[seq_cols].fillna(0).to_numpy(dtype=np.float32)
+    X = np.expand_dims(X_2d, axis=-1)
 
-    # Ensure numeric types and drop any remaining non-numeric columns
-    numeric_df = feature_df.select_dtypes(include=[np.number]).copy()
-    dropped_cols = set(feature_df.columns) - set(numeric_df.columns)
-    if dropped_cols:
-        print(f"Dropping non-numeric feature columns: {sorted(dropped_cols)}")
-
-    if numeric_df.empty:
-        return np.array([]), np.array([]), [], [], pd.Index([])
-
-    numeric_df = numeric_df.fillna(0)
-
-    X = numeric_df.to_numpy(dtype=float)
     classes = list(label_encoder.classes_ or [])
     label_map = {cls: idx for idx, cls in enumerate(classes)}
-    y = label_series.map(label_map).to_numpy(dtype=int)
-    return X, y, list(numeric_df.columns), classes, numeric_df.index
+    y = y_series.map(label_map).to_numpy(dtype=np.int64)
+
+    return X, y, classes, df.index, seq_cols
 
 
-def _train_val_split(X: np.ndarray, y: np.ndarray, test_size: float = 0.2, scale: bool = True):
-    if len(np.unique(y)) < 2:
-        raise ValueError("Need at least two classes for training")
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=test_size, stratify=y if len(np.unique(y)) > 1 else None, random_state=42
-    )
-    scaler = None
-    if scale:
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_val = scaler.transform(X_val)
-    return X_train, X_val, y_train, y_val, scaler
-
-
-class ScreentimeMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_layers: Iterable[int] = (128, 64), dropout: float = 0.1):
-        super().__init__()
-        layers: List[nn.Module] = []
-        prev_dim = input_dim
-        for h in hidden_layers:
-            layers += [nn.Linear(prev_dim, h), nn.ReLU(), nn.Dropout(dropout)]
-            prev_dim = h
-        layers.append(nn.Linear(prev_dim, 2))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-def _make_loaders(
-    X_train,
-    X_val,
-    y_train,
-    y_val,
-    batch_size: int = 64,
-    use_weighted_sampler: bool = False,
-):
+def _make_loaders(X_train, X_val, y_train, y_val, batch_size=32, use_weighted_sampler=True):
     train_ds = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
     val_ds = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.long))
 
@@ -170,18 +103,19 @@ def _compute_class_weights(y: np.ndarray) -> Optional[torch.Tensor]:
 
 
 def _binary_metrics_from_cm(cm: np.ndarray) -> Tuple[float, float]:
-    """Return (sensitivity, specificity) from a 2x2 confusion matrix."""
     if cm is None or cm.shape != (2, 2):
         return float("nan"), float("nan")
-
     tn, fp, fn, tp = cm.ravel()
     sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     return sensitivity, specificity
 
 
+def _balanced_accuracy_from_sens_spec(sensitivity: float, specificity: float) -> float:
+    return (sensitivity + specificity) / 2.0
+
+
 def _mean_variable_length_sequences(sequences: List[List[float]]) -> List[float]:
-    """Compute element-wise mean for variable-length sequences using NaN padding."""
     valid = [seq for seq in sequences if seq]
     if not valid:
         return []
@@ -194,12 +128,42 @@ def _mean_variable_length_sequences(sequences: List[List[float]]) -> List[float]
     return np.nanmean(padded, axis=0).tolist()
 
 
+class StepLSTMClassifier(nn.Module):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=1, dropout=0.2, debug_shapes=True):
+        super().__init__()
+        self.debug_shapes = debug_shapes
+        self._shape_debug_logged = False
+        effective_dropout = dropout if num_layers > 1 else 0.0
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=effective_dropout,
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 2),
+        )
+
+    def forward(self, x):
+        if self.debug_shapes and not self._shape_debug_logged:
+            print(f"[LSTM DEBUG] Input shape before LSTM: {tuple(x.shape)}")
+        out, _ = self.lstm(x)
+        if self.debug_shapes and not self._shape_debug_logged:
+            print(f"[LSTM DEBUG] Output shape after LSTM: {tuple(out.shape)}")
+            self._shape_debug_logged = True
+        last_hidden = out[:, -1, :]
+        return self.classifier(last_hidden)
+
+
 def _train_evaluate_split(
     X_train,
     X_eval,
     y_train,
     y_eval,
-    hidden_layers,
+    hidden_size,
+    num_layers,
     dropout,
     lr,
     weight_decay,
@@ -209,27 +173,30 @@ def _train_evaluate_split(
     device,
     X_early_stop=None,
     y_early_stop=None,
-    early_stopping_patience: int = 5,
-    early_stopping_min_delta: float = 1e-4,
-    min_epochs: int = 5,
+    early_stopping_patience=5,
+    early_stopping_min_delta=1e-4,
+    min_epochs=5,
+    debug_shapes=True,
 ):
     if X_early_stop is None:
         X_early_stop = X_eval
         y_early_stop = y_eval
 
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_eval_scaled = scaler.transform(X_eval)
-    X_early_stop_scaled = scaler.transform(X_early_stop)
+    model = StepLSTMClassifier(
+        input_size=X_train.shape[2],
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        dropout=dropout,
+        debug_shapes=debug_shapes,
+    ).to(device)
 
-    model = ScreentimeMLP(input_dim=X_train_scaled.shape[1], hidden_layers=hidden_layers, dropout=dropout).to(device)
     class_weights = _compute_class_weights(y_train)
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(device) if class_weights is not None else None)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     train_loader, val_loader = _make_loaders(
-        X_train_scaled,
-        X_early_stop_scaled,
+        X_train,
+        X_early_stop,
         y_train,
         y_early_stop,
         batch_size=batch_size,
@@ -264,6 +231,7 @@ def _train_evaluate_split(
                 logits = model(xb)
                 val_loss = criterion(logits, yb)
                 val_loss_sum += val_loss.item() * xb.size(0)
+
         current_val_loss = val_loss_sum / len(val_loader.dataset)
         val_losses.append(current_val_loss)
 
@@ -283,10 +251,11 @@ def _train_evaluate_split(
 
     model.load_state_dict(best_state)
 
-    eval_ds = TensorDataset(torch.tensor(X_eval_scaled, dtype=torch.float32), torch.tensor(y_eval, dtype=torch.long))
+    eval_ds = TensorDataset(torch.tensor(X_eval, dtype=torch.float32), torch.tensor(y_eval, dtype=torch.long))
     eval_loader = DataLoader(eval_ds, batch_size=batch_size, shuffle=False)
     model.eval()
     eval_preds, eval_targets = [], []
+
     with torch.no_grad():
         for xb, yb in eval_loader:
             xb = xb.to(device)
@@ -299,7 +268,6 @@ def _train_evaluate_split(
 
     return {
         "model": model,
-        "scaler": scaler,
         "preds": preds,
         "targets": targets,
         "train_losses": train_losses,
@@ -307,52 +275,51 @@ def _train_evaluate_split(
         "best_epoch": best_epoch,
         "epochs_ran": len(train_losses),
         "stopped_early": stopped_early,
-        "best_val_loss": best_val_loss,
     }
 
 
 def train_one_window(
     df,
-    target_type: str,
-    hidden_layers: Iterable[int] = (128, 64),
-    dropout: float = 0.1,
-    lr: float = 1e-3,
-    weight_decay: float = 1e-4,
-    use_weighted_sampler: bool = True,
-    epochs: int = 20,
-    batch_size: int = 64,
-    window_id: Optional[int] = None,
-    save_plots: bool = True,
-    plots_dir: str = "data",
-    use_loocv: bool = False,
-    group_col: str = "app_user_id",
-    inner_val_size: float = 0.2,
-    early_stopping_patience: int = 5,
-    early_stopping_min_delta: float = 1e-4,
-    min_epochs: int = 5,
+    target_type,
+    hidden_size=64,
+    num_layers=1,
+    dropout=0.2,
+    lr=1e-3,
+    weight_decay=1e-4,
+    use_weighted_sampler=True,
+    epochs=20,
+    batch_size=32,
+    window_id=None,
+    save_plots=True,
+    plots_dir="data",
+    use_loocv=False,
+    group_col="app_user_id",
+    inner_val_size=0.2,
+    early_stopping_patience=5,
+    early_stopping_min_delta=1e-4,
+    min_epochs=5,
+    debug_shapes=True,
 ):
-    X, y, feature_names, classes, row_index = _prepare_features_labels(df, target_type)
+    X, y, classes, row_index, seq_cols = _prepare_step_sequences_labels(df, target_type)
     if X.size == 0 or y.size == 0:
         raise ValueError("No data available after preprocessing")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
+
     model = None
-    scaler = None
-    train_losses, val_losses = [], []
     cm = None
-    sensitivity = float("nan")
-    specificity = float("nan")
+    train_losses, val_losses = [], []
     successful_folds = 1
     acc = float("nan")
     f1 = float("nan")
-    best_epoch = 0
-    epochs_ran = 0
-    stopped_early = False
+    sensitivity = float("nan")
+    specificity = float("nan")
+    balanced_accuracy = float("nan")
 
     if use_loocv:
         if group_col not in df.columns:
-            raise ValueError(f"LOOCV requires '{group_col}' column in the input dataframe")
+            raise ValueError(f"LOOCV requires '{group_col}' column in input dataframe")
 
         groups = df.loc[row_index, group_col]
         valid_group_mask = groups.notna().to_numpy()
@@ -368,9 +335,11 @@ def train_one_window(
         all_targets = []
         fold_train_losses = []
         fold_val_losses = []
-        fold_best_epochs = []
-        fold_epochs_ran = []
-        fold_stopped_early = []
+        fold_accs = []
+        fold_f1s = []
+        fold_sens = []
+        fold_spec = []
+        fold_bal_acc = []
         successful_folds = 0
 
         for train_idx, test_idx in logo.split(X_cv, y_cv, groups_cv):
@@ -379,9 +348,7 @@ def train_one_window(
             X_test_fold = X_cv[test_idx]
             y_test_fold = y_cv[test_idx]
 
-            if np.unique(y_train_fold).size < 2:
-                continue
-            if y_test_fold.size == 0:
+            if np.unique(y_train_fold).size < 2 or y_test_fold.size == 0:
                 continue
 
             stratify_labels = y_train_fold if np.unique(y_train_fold).size > 1 else None
@@ -394,16 +361,7 @@ def train_one_window(
                     stratify=stratify_labels,
                 )
             except ValueError:
-                try:
-                    X_inner_train, X_inner_val, y_inner_train, y_inner_val = train_test_split(
-                        X_train_fold,
-                        y_train_fold,
-                        test_size=inner_val_size,
-                        random_state=42,
-                        stratify=None,
-                    )
-                except ValueError:
-                    continue
+                continue
 
             if np.unique(y_inner_train).size < 2 or len(y_inner_val) == 0:
                 continue
@@ -413,7 +371,8 @@ def train_one_window(
                 X_eval=X_test_fold,
                 y_train=y_inner_train,
                 y_eval=y_test_fold,
-                hidden_layers=hidden_layers,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
                 dropout=dropout,
                 lr=lr,
                 weight_decay=weight_decay,
@@ -426,55 +385,61 @@ def train_one_window(
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
+                debug_shapes=debug_shapes,
             )
 
             successful_folds += 1
             model = fold_result["model"]
-            scaler = fold_result["scaler"]
-            all_preds.append(fold_result["preds"])
-            all_targets.append(fold_result["targets"])
+            fold_preds = fold_result["preds"]
+            fold_targets = fold_result["targets"]
+            all_preds.append(fold_preds)
+            all_targets.append(fold_targets)
             fold_train_losses.append(fold_result["train_losses"])
             fold_val_losses.append(fold_result["val_losses"])
-            fold_best_epochs.append(fold_result["best_epoch"])
-            fold_epochs_ran.append(fold_result["epochs_ran"])
-            fold_stopped_early.append(fold_result["stopped_early"])
 
-            fold_acc = accuracy_score(fold_result["targets"], fold_result["preds"])
-            fold_f1 = f1_score(fold_result["targets"], fold_result["preds"], zero_division=0)
-            print(
-                f"LOOCV fold {successful_folds} - "
-                f"acc={fold_acc:.3f} f1={fold_f1:.3f} "
-                f"best_epoch={fold_result['best_epoch']} ran={fold_result['epochs_ran']}"
-            )
+            fold_acc = accuracy_score(fold_targets, fold_preds)
+            fold_f1 = f1_score(fold_targets, fold_preds, zero_division=0)
+            fold_cm = confusion_matrix(fold_targets, fold_preds, labels=[0, 1])
+            fold_sens, fold_spec_val = _binary_metrics_from_cm(fold_cm)
+            fold_bal = _balanced_accuracy_from_sens_spec(fold_sens, fold_spec_val)
+
+            fold_accs.append(fold_acc)
+            fold_f1s.append(fold_f1)
+            fold_sens.append(fold_sens)
+            fold_spec.append(fold_spec_val)
+            fold_bal_acc.append(fold_bal)
 
         if successful_folds == 0:
             raise ValueError("No valid LOOCV folds were available for training")
 
         preds = np.concatenate(all_preds)
         targets = np.concatenate(all_targets)
-        acc = accuracy_score(targets, preds)
-        f1 = f1_score(targets, preds, zero_division=0)
-        cm = confusion_matrix(targets, preds, labels=[0, 1])
-        sensitivity, specificity = _binary_metrics_from_cm(cm)
 
+        acc = float(np.mean(fold_accs))
+        f1 = float(np.mean(fold_f1s))
+        sensitivity = float(np.mean(fold_sens))
+        specificity = float(np.mean(fold_spec))
+        balanced_accuracy = float(np.mean(fold_bal_acc))
+
+        cm = confusion_matrix(targets, preds, labels=[0, 1])
         train_losses = _mean_variable_length_sequences(fold_train_losses)
         val_losses = _mean_variable_length_sequences(fold_val_losses)
-        best_epoch = int(round(float(np.mean(fold_best_epochs)))) if fold_best_epochs else 0
-        epochs_ran = int(round(float(np.mean(fold_epochs_ran)))) if fold_epochs_ran else 0
-        stopped_early = bool(np.any(fold_stopped_early))
-        print(
-            f"LOOCV aggregate - acc={acc:.3f} f1={f1:.3f} "
-            f"sens={sensitivity:.3f} spec={specificity:.3f} folds={successful_folds} "
-            f"avg_best_epoch={best_epoch} avg_epochs_ran={epochs_ran}"
-        )
     else:
-        X_train, X_val, y_train, y_val, _ = _train_val_split(X, y)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y if len(np.unique(y)) > 1 else None,
+        )
+
         split_result = _train_evaluate_split(
             X_train=X_train,
             X_eval=X_val,
             y_train=y_train,
             y_eval=y_val,
-            hidden_layers=hidden_layers,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
             dropout=dropout,
             lr=lr,
             weight_decay=weight_decay,
@@ -487,167 +452,216 @@ def train_one_window(
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             min_epochs=min_epochs,
+            debug_shapes=debug_shapes,
         )
 
         model = split_result["model"]
-        scaler = split_result["scaler"]
-        train_losses = split_result["train_losses"]
-        val_losses = split_result["val_losses"]
         preds = split_result["preds"]
         targets = split_result["targets"]
-        best_epoch = split_result["best_epoch"]
-        epochs_ran = split_result["epochs_ran"]
-        stopped_early = split_result["stopped_early"]
+        train_losses = split_result["train_losses"]
+        val_losses = split_result["val_losses"]
 
         acc = accuracy_score(targets, preds)
         f1 = f1_score(targets, preds, zero_division=0)
         cm = confusion_matrix(targets, preds, labels=[0, 1])
         sensitivity, specificity = _binary_metrics_from_cm(cm)
-        for epoch, (train_loss, val_loss) in enumerate(zip(train_losses, val_losses), start=1):
-            print(
-                f"Epoch {epoch}/{epochs_ran} - "
-                f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-                f"acc={acc:.3f} f1={f1:.3f} sens={sensitivity:.3f} spec={specificity:.3f}"
-            )
-        print(
-            f"Early stopping - best_epoch={best_epoch} epochs_ran={epochs_ran} stopped_early={stopped_early}"
-        )
+        balanced_accuracy = _balanced_accuracy_from_sens_spec(sensitivity, specificity)
 
     if save_plots:
         os.makedirs(plots_dir, exist_ok=True)
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
-        # Confusion matrix plot
-        fig, ax = plt.subplots(figsize=(5, 4))
+
+        fig = plt.figure(figsize=(5.5, 5.5))
+        gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
+        ax = fig.add_subplot(gs[0, 0])
+        metrics_ax = fig.add_subplot(gs[1, 0])
+
         im = ax.imshow(cm, cmap="Blues")
-        ax.set_title(f"Confusion Matrix — {target_type} ({tag})", fontsize=12)
+        ax.set_title(f"Confusion Matrix: LSTM {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
         ax.set_xticks([0, 1])
         ax.set_yticks([0, 1])
         ax.set_xticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
         ax.set_yticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
+
         for (i, j), v in np.ndenumerate(cm):
-            ax.text(j, i, str(v), ha="center", va="center", fontsize=9)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        fig.text(
-            0.5,
-            0.02,
-            f"F1: {f1:.3f}   Sensitivity: {sensitivity:.3f}   Specificity: {specificity:.3f}",
-            ha="center",
-            fontsize=10,
+            ax.text(j, i, str(v), ha="center", va="center", fontsize=10)
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+        cbar.ax.tick_params(labelsize=8)
+
+        metrics_ax.axis("off")
+        metrics_text = (
+            f"F1: {f1:.3f}    Sensitivity: {sensitivity:.3f}\n"
+            f"Specificity: {specificity:.3f}    Balanced Accuracy: {balanced_accuracy:.3f}"
         )
-        fig.tight_layout(rect=[0, 0.05, 1, 0.97])
-        plt.savefig(os.path.join(plots_dir, f"confusion_matrix_{tag}.png"), dpi=200)
+        metrics_ax.text(0.5, 0.5, metrics_text, ha="center", va="center", fontsize=10)
+
+        fig.subplots_adjust(left=0.10, right=0.86, top=0.90, bottom=0.09)
+        plt.savefig(os.path.join(plots_dir, f"lstm_confusion_matrix_{tag}.png"), dpi=200)
         plt.close(fig)
 
-        # Learning curve plot
-        fig, ax = plt.subplots(figsize=(4, 3))
+        fig, ax = plt.subplots(figsize=(4.5, 3.2))
         ax.plot(train_losses, label="train")
         ax.plot(val_losses, label="val")
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Loss")
-        ax.set_title("Learning Curve")
+        ax.set_title("LSTM Learning Curve", fontweight="bold")
         ax.legend()
         fig.tight_layout()
-        plt.savefig(os.path.join(plots_dir, f"learning_curve_{tag}.png"), dpi=200)
+        plt.savefig(os.path.join(plots_dir, f"lstm_learning_curve_{tag}.png"), dpi=200)
         plt.close(fig)
 
     return {
         "model": model,
-        "scaler": scaler,
-        "feature_names": feature_names,
-        "classes": classes,
         "val_accuracy": acc,
         "val_f1": f1,
         "sensitivity": sensitivity,
         "specificity": specificity,
-        "use_loocv": use_loocv,
-        "successful_folds": successful_folds,
-        "best_epoch": best_epoch,
-        "epochs_ran": epochs_ran,
-        "stopped_early": stopped_early,
+        "balanced_accuracy": balanced_accuracy,
         "confusion_matrix": cm,
         "train_losses": train_losses,
         "val_losses": val_losses,
+        "successful_folds": successful_folds,
+        "sequence_features": seq_cols,
     }
 
 
 def run_experiment(
-    target_type: str = "social_connection",
-    time_windows: Iterable[int] = (3, 6, 9, 12),
-    propagate_labels: bool = False,
-    use_accurate_method: bool = False,
-    hidden_layers: Iterable[int] = (128, 64),
-    weight_decay: float = 1e-4,
-    use_weighted_sampler: bool = True,
-    epochs: int = 15,
-    use_subwindows: bool = False,
-    lookback_hours: int = 12,
-    subwindow_hours: int = 3,
-    standardized: bool = True,
-    use_loocv: bool = False,
-    inner_val_size: float = 0.2,
-    early_stopping_patience: int = 5,
-    early_stopping_min_delta: float = 1e-4,
-    min_epochs: int = 5,
+    target_type="sleep",
+    time_windows=(24),
+    propagate_labels=False,
+    hidden_size=64,
+    num_layers=1,
+    dropout=0.2,
+    lr=1e-3,
+    weight_decay=1e-4,
+    use_weighted_sampler=True,
+    epochs=20,
+    batch_size=32,
+    use_loocv=False,
+    inner_val_size=0.2,
+    early_stopping_patience=5,
+    early_stopping_min_delta=1e-4,
+    min_epochs=5,
+    debug_shapes=False,
 ):
     pipeline = _select_pipeline(
-        target_type,
-        time_windows,
-        propagate_labels,
-        use_accurate_method,
-        use_subwindows,
-        lookback_hours,
-        subwindow_hours,
-        standardized,
+        target_type=target_type,
+        time_windows=time_windows,
+        propagate_labels=propagate_labels,
     )
+
     pipeline.fit(None)
-    merged_by_window: Dict[int, np.ndarray] = pipeline.transform(None)
+    merged_by_window: Dict[int, pd.DataFrame] = pipeline.transform(None)
 
     results = {}
     for window, df in merged_by_window.items():
         if df is None or df.empty:
             print(f"Window {window}h skipped: no data")
             continue
+
         try:
-            print(f"\n=== Training MLP for {target_type} | window {window}h ===")
+            print(f"\n=== Training LSTM for {target_type} | window {window}h ===")
             results[window] = train_one_window(
-                df,
+                df=df,
                 target_type=target_type,
-                hidden_layers=hidden_layers,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                dropout=dropout,
+                lr=lr,
                 weight_decay=weight_decay,
                 use_weighted_sampler=use_weighted_sampler,
                 epochs=epochs,
+                batch_size=batch_size,
                 window_id=window,
                 use_loocv=use_loocv,
                 inner_val_size=inner_val_size,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
+                debug_shapes=debug_shapes,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Window {window}h failed: {exc}")
+
     return results
 
 
-if __name__ == "__main__":
-    run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "social_connection"),
-        time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "15,16,17,18,19,20,21,21,23,24,25").split(",")],
-        propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
-        use_accurate_method=os.getenv("USE_ACCURATE_METHOD", "true").lower() == "true",
-        hidden_layers=(128, 64),
-        weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
-        use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true",
-        epochs=int(os.getenv("EPOCHS", "20")),
-        use_subwindows=os.getenv("USE_SUBWINDOWS", "true").lower() == "true",
-        lookback_hours=int(os.getenv("LOOKBACK_HOURS", "24")),
-        subwindow_hours=int(os.getenv("SUBWINDOW_HOURS", "3")),
-        standardized=os.getenv("STANDARDIZED", "true").lower() == "true",
-        use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
-        inner_val_size=float(os.getenv("INNER_VAL_SIZE", "0.2")),
-        early_stopping_patience=int(os.getenv("EARLY_STOPPING_PATIENCE", "5")),
-        early_stopping_min_delta=float(os.getenv("EARLY_STOPPING_MIN_DELTA", "0.0001")),
-        min_epochs=int(os.getenv("MIN_EPOCHS", "5")),
+def print_summary(results: Dict[int, dict]):
+    """Print compact per-window metrics and the best-performing window."""
+    print("\n" + "=" * 80)
+    print("LSTM SUMMARY - ALL TIME WINDOWS")
+    print("=" * 80)
+
+    if not results:
+        print("No successful windows to summarize.")
+        return
+
+    print(f"{'Window':>8} {'F1':>10} {'Accuracy':>10} {'Sensitivity':>12} {'Specificity':>12} {'Bal Acc':>10}")
+    print("-" * 80)
+
+    best_window = None
+    best_f1 = float("-inf")
+    best_acc = float("-inf")
+
+    for window in sorted(results.keys()):
+        metrics = results[window]
+        f1 = metrics.get("val_f1")
+        acc = metrics.get("val_accuracy")
+        sens = metrics.get("sensitivity")
+        spec = metrics.get("specificity")
+        bal_acc = metrics.get("balanced_accuracy")
+
+        print(
+            f"{str(window) + 'h':>8} "
+            f"{f1:>10.4f} {acc:>10.4f} {sens:>12.4f} {spec:>12.4f} {bal_acc:>10.4f}"
+        )
+
+        if f1 is not None and not np.isnan(f1):
+            if f1 > best_f1:
+                best_f1 = f1
+                best_acc = acc if acc is not None else float("-inf")
+                best_window = window
+        elif best_window is None and acc is not None and not np.isnan(acc):
+            if acc > best_acc:
+                best_acc = acc
+                best_window = window
+
+    print("\nBest window:")
+    if best_window is None:
+        print("  No valid best window found.")
+        return
+
+    best_metrics = results[best_window]
+    print(
+        f"  {best_window}h | "
+        f"F1={best_metrics.get('val_f1', float('nan')):.4f}, "
+        f"Accuracy={best_metrics.get('val_accuracy', float('nan')):.4f}, "
+        f"Sensitivity={best_metrics.get('sensitivity', float('nan')):.4f}, "
+        f"Specificity={best_metrics.get('specificity', float('nan')):.4f}, "
+        f"Balanced Accuracy={best_metrics.get('balanced_accuracy', float('nan')):.4f}"
     )
+
+
+if __name__ == "__main__":
+    results = run_experiment(
+        target_type=os.getenv("TARGET_TYPE", "self_harm"),
+        time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
+        propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
+        hidden_size=int(os.getenv("HIDDEN_SIZE", "16")),
+        num_layers=int(os.getenv("NUM_LAYERS", "2")),
+        dropout=float(os.getenv("DROPOUT", "0.2")),
+        lr=float(os.getenv("LEARNING_RATE", "0.001")),
+        weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
+        use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
+        epochs=int(os.getenv("EPOCHS", "20")),
+        batch_size=int(os.getenv("BATCH_SIZE", "32")),
+        use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
+        debug_shapes=os.getenv("DEBUG_SHAPES", "true").lower() == "true",
+    )
+    print_summary(results)
+
+
