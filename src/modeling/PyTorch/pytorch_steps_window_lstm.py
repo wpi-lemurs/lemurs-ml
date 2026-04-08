@@ -35,11 +35,15 @@ def _select_pipeline(
             time_windows=list(time_windows),
             propagate_labels=propagate_labels,
         )
+    # Sleep labels are derived from morning survey sleep items, so shared-label
+    # averaging must be disabled to preserve consistent target construction.
+    effective_average_shared_labels = False if target_type == "sleep" else average_shared_labels
+
     return create_step_risk_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
-        average_shared_labels=average_shared_labels,
+        average_shared_labels=effective_average_shared_labels,
     )
 
 
@@ -175,6 +179,7 @@ def _train_evaluate_split(
     device,
     X_early_stop=None,
     y_early_stop=None,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
@@ -246,7 +251,7 @@ def _train_evaluate_split(
         else:
             no_improve_count += 1
 
-        can_stop = early_stopping_patience and early_stopping_patience > 0
+        can_stop = use_early_stopping and early_stopping_patience and early_stopping_patience > 0
         if can_stop and (epoch + 1) >= max(1, min_epochs) and no_improve_count >= early_stopping_patience:
             stopped_early = True
             break
@@ -297,6 +302,7 @@ def train_one_window(
     use_loocv=False,
     group_col="app_user_id",
     inner_val_size=0.2,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
@@ -384,6 +390,7 @@ def train_one_window(
                 device=device,
                 X_early_stop=X_inner_val,
                 y_early_stop=y_inner_val,
+                use_early_stopping=use_early_stopping,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
@@ -451,6 +458,7 @@ def train_one_window(
             device=device,
             X_early_stop=X_val,
             y_early_stop=y_val,
+            use_early_stopping=use_early_stopping,
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             min_epochs=min_epochs,
@@ -546,16 +554,21 @@ def run_experiment(
     batch_size=32,
     use_loocv=False,
     inner_val_size=0.2,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
     debug_shapes=False,
 ):
+    effective_average_shared_labels = False if target_type == "sleep" else average_shared_labels
+    if target_type == "sleep" and average_shared_labels:
+        print("[INFO] Ignoring average_shared_labels=True for sleep target; using morning-only sleep labels.")
+
     pipeline = _select_pipeline(
         target_type=target_type,
         time_windows=time_windows,
         propagate_labels=propagate_labels,
-        average_shared_labels=average_shared_labels,
+        average_shared_labels=effective_average_shared_labels,
     )
 
     pipeline.fit(None)
@@ -583,6 +596,7 @@ def run_experiment(
                 window_id=window,
                 use_loocv=use_loocv,
                 inner_val_size=inner_val_size,
+                use_early_stopping=use_early_stopping,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
@@ -652,19 +666,20 @@ def print_summary(results: Dict[int, dict]):
 
 if __name__ == "__main__":
     results = run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "sleep"),
+        target_type=os.getenv("TARGET_TYPE", "suicide_risk"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
-        average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "false").lower() == "true",
+        average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "true").lower() == "true",
         hidden_size=int(os.getenv("HIDDEN_SIZE", "16")),
         num_layers=int(os.getenv("NUM_LAYERS", "2")),
         dropout=float(os.getenv("DROPOUT", "0.2")),
         lr=float(os.getenv("LEARNING_RATE", "0.001")),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
-        epochs=int(os.getenv("EPOCHS", "20")),
+        epochs=int(os.getenv("EPOCHS", "70")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
         use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
+        use_early_stopping=os.getenv("USE_EARLY_STOPPING", "false").lower() == "true",
         debug_shapes=os.getenv("DEBUG_SHAPES", "true").lower() == "true",
     )
     print_summary(results)
