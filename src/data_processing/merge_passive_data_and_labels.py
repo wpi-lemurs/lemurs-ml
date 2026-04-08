@@ -4,6 +4,7 @@ from src.categorization.suicide_risk_labels import *
 from src.categorization.daily_questions_categorization import get_daily_labels_dataframe
 from src.config import DATA_DIR
 from functools import reduce
+from src.data_processing.passive_data_analysis import hourly_health_data
 
 # No need to create data_dir here - it's already created in config.py
 data_dir = DATA_DIR
@@ -415,8 +416,7 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated PHQ-9 labels
@@ -426,7 +426,7 @@ def merge_hourly_screentime_with_phq9(hourly_screentime_df=None, phq9_df=phq9_da
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
                                                       app_user_id=app_user_id, date_range=date_range,
-                                                      use_accurate_method=use_accurate_method)
+                                                      use_accurate_method=True)
 
     if hourly_screentime_df.empty:
         print("Warning: No hourly screentime data available")
@@ -474,8 +474,7 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
     - fill_method: method to fill null values in screentime data ('linear', 'ffill', 'bfill', 'zero', or None)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with hourly screentime metrics and associated risk labels
@@ -485,7 +484,7 @@ def merge_hourly_screentime_with_risk_labels(hourly_screentime_df=None, risk_lab
         from src.data_processing.passive_data_analysis import hourly_screentime_data
         hourly_screentime_df = hourly_screentime_data(week_anchor=week_anchor, fill_method=fill_method,
                                                       app_user_id=app_user_id, date_range=date_range,
-                                                      use_accurate_method=use_accurate_method)
+                                                      use_accurate_method=True)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:
@@ -518,8 +517,7 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     - week_anchor: weekday anchor for weekly grouping (default 'MON')
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'phq9_response_id', 'survey_timestamp',
@@ -533,10 +531,10 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
     if screentime_df is None:
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor=week_anchor,
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range, use_accurate_method=use_accurate_method)
+                                             date_range=date_range, use_accurate_method=True)
     else:
         hourly_data = hourly_screentime_data(screentime_df, 'start_time', week_anchor, app_user_id,
-                                            fill_method, date_range, use_accurate_method)
+                                            fill_method, date_range, True)
 
     if hourly_data.empty:
         print("Warning: No screentime data available")
@@ -629,7 +627,8 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
 
 
 def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_column,
-                                           fill_method='zero', hours_before_survey=24):
+                                           fill_method='zero', hours_before_survey=24,
+                                           standardized=True, reference_hour=9):
     """
     Generic helper function to merge daily features (hourly time windows) with risk labels.
 
@@ -642,6 +641,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
     - label_column: name of the risk label column (e.g., 'suicide_risk_label', 'self_harm_risk_label', 'sleep_label')
     - fill_method: method to fill null values in hourly features (default 'zero')
     - hours_before_survey: number of hours before a survey to look back for data (default 24)
+    - standardized: if True, use a fixed daily reference hour for all users (default False)
+    - reference_hour: anchor hour used when standardized=True (default 9)
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -692,6 +693,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
         # For each survey, look back n hours
         for _, survey_row in user_surveys.iterrows():
             survey_time = survey_row['timestamp']
+            if standardized:
+                survey_time = survey_time.normalize() + pd.Timedelta(hours=reference_hour)
             lookback_start = survey_time - pd.Timedelta(hours=hours_before_survey)
 
             # Get data in the lookback window
@@ -771,8 +774,7 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
                           This allows experimenting with different time windows (e.g., 3, 6, 9, 12, 24 hours)
     - app_user_id: filter rows to this app_user_id; if -1, include all users
     - date_range: tuple of (start_date, end_date) to filter data
-    - use_accurate_method: if True, uses calculate_accurate_screentime_from_app_table for more precise calculations.
-                          if False (default), uses the original method based on screentime table.
+    - use_accurate_method: DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -787,10 +789,10 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
         # Use default screentime_data from passive_data_analysis
         hourly_data = hourly_screentime_data(start_col='start_time', week_anchor='MON',
                                              app_user_id=app_user_id, fill_method=fill_method,
-                                             date_range=date_range, use_accurate_method=use_accurate_method)
+                                             date_range=date_range, use_accurate_method=True)
     else:
         hourly_data = hourly_screentime_data(screentime_df, 'start_time', 'MON', app_user_id,
-                                            fill_method, date_range, use_accurate_method)
+                                            fill_method, date_range, True)
 
     # If no risk labels provided, use daily_labels_data
     if risk_labels_df is None:
@@ -800,6 +802,150 @@ def merge_daily_screentime_features_with_risk_labels(screentime_df=None, risk_la
         hourly_data, risk_labels_df, label_column,
         fill_method=fill_method, hours_before_survey=hours_before_survey
     )
+
+
+def merge_daily_step_features_with_risk_labels(
+    steps_df=None,
+    risk_labels_df=None,
+    label_column='suicide_risk_label',
+    fill_method='zero',
+    hours_before_survey=24,
+    app_user_id=-1,
+    date_range=None,
+    standardized=True,
+    reference_hour=9,
+):
+    """
+    Merge hourly step windows (last n hours before survey) with a selected daily risk label.
+    """
+    from src.data_processing.passive_data_analysis import hourly_health_data
+
+    hourly_data = hourly_health_data(
+        steps_df=steps_df if steps_df is not None else steps_data,
+        speed_df=None,
+        distance_df=None,
+        cal_df=None,
+        start_col='start_timestamp',
+        app_user_id=app_user_id,
+        fill_method=fill_method,
+        date_range=date_range,
+    )
+
+    if hourly_data.empty:
+        print("Warning: No step data available")
+        return pd.DataFrame()
+
+    hourly_steps_only = hourly_data[['app_user_id', 'datetime', 'hourly_steps']].copy()
+
+    if risk_labels_df is None:
+        risk_labels_df = daily_labels_data
+
+    return _merge_daily_features_with_risk_labels(
+        hourly_steps_only,
+        risk_labels_df,
+        label_column,
+        fill_method=fill_method,
+        hours_before_survey=hours_before_survey,
+        standardized=standardized,
+        reference_hour=reference_hour,
+    )
+
+
+def merge_daily_step_features_with_phq9(
+    steps_df=None,
+    phq9_df=phq9_data,
+    fill_method='zero',
+    hours_before_survey=24,
+    app_user_id=-1,
+    date_range=None,
+    standardized=True,
+    reference_hour=9,
+):
+    """
+    Merge hourly step windows (last n hours before survey) with PHQ-9 labels.
+    """
+
+    hourly_data = hourly_health_data(
+        steps_df=steps_df if steps_df is not None else steps_data,
+        speed_df=None,
+        distance_df=None,
+        cal_df=None,
+        start_col='start_timestamp',
+        app_user_id=app_user_id,
+        fill_method=fill_method,
+        date_range=date_range,
+    )
+
+    if hourly_data.empty:
+        print("Warning: No step data available")
+        return pd.DataFrame()
+
+    hourly_steps_only = hourly_data[['app_user_id', 'datetime', 'hourly_steps']].copy()
+
+    phq9_copy = phq9_df.copy()
+    phq9_copy['timestamp'] = pd.to_datetime(phq9_copy['timestamp'], errors='coerce')
+    phq9_copy = phq9_copy.dropna(subset=['timestamp'])
+
+    if phq9_copy.empty:
+        print("Warning: No PHQ-9 data available")
+        return pd.DataFrame()
+
+    hourly_steps_only['datetime'] = pd.to_datetime(hourly_steps_only['datetime'])
+    result_list = []
+
+    for user_id in phq9_copy['app_user_id'].unique():
+        user_steps = hourly_steps_only[hourly_steps_only['app_user_id'] == user_id].copy()
+        user_surveys = phq9_copy[phq9_copy['app_user_id'] == user_id].copy()
+
+        if user_steps.empty:
+            continue
+
+        user_steps = user_steps.sort_values('datetime')
+
+        for _, survey_row in user_surveys.iterrows():
+            survey_time = survey_row['timestamp']
+            if standardized:
+                survey_time = survey_time.normalize() + pd.Timedelta(hours=reference_hour)
+            lookback_start = survey_time - pd.Timedelta(hours=hours_before_survey)
+            window_data = user_steps[
+                (user_steps['datetime'] >= lookback_start) &
+                (user_steps['datetime'] < survey_time)
+            ].copy()
+
+            if window_data.empty:
+                continue
+
+            window_data['hours_before_survey'] = (
+                (survey_time - window_data['datetime']).dt.total_seconds() / 3600
+            ).round().astype(int)
+
+            hour_features = {}
+            for i in range(hours_before_survey):
+                hour_data = window_data[window_data['hours_before_survey'] == i]
+                if not hour_data.empty:
+                    hour_features[f'hour_{i}'] = hour_data['hourly_steps'].sum()
+                else:
+                    hour_features[f'hour_{i}'] = 0.0 if fill_method == 'zero' else np.nan
+
+            result_row = {
+                'app_user_id': user_id,
+                'survey_timestamp': survey_time,
+                'severity_label': survey_row['severity_label'],
+                'phq9_total_score': survey_row['phq9_total_score'],
+            }
+            result_row.update(hour_features)
+            result_list.append(result_row)
+
+    if not result_list:
+        print(f"Warning: No step data found in the {hours_before_survey} hours before any PHQ-9 surveys")
+        return pd.DataFrame()
+
+    merged_df = pd.DataFrame(result_list)
+    base_cols = ['app_user_id', 'survey_timestamp']
+    hour_cols = [f'hour_{i}' for i in range(hours_before_survey)]
+    meta_cols = ['severity_label', 'phq9_total_score']
+    existing_hour_cols = [col for col in hour_cols if col in merged_df.columns]
+    return merged_df[base_cols + existing_hour_cols + meta_cols]
 
 
 # Backward compatibility: Keep the old function name as an alias

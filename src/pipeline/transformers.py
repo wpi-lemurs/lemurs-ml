@@ -18,6 +18,8 @@ from src.categorization.daily_questions_categorization import get_daily_labels_d
 from src.data_processing.merge_passive_data_and_labels import (
     merge_daily_screentime_features_with_phq9,
     merge_daily_screentime_features_with_risk_labels,
+    merge_daily_step_features_with_phq9,
+    merge_daily_step_features_with_risk_labels,
     propagate_positive_labels
 )
 
@@ -135,11 +137,11 @@ class ScreentimeProcessor(BaseEstimator, TransformerMixin):
         Filter to specific user ID, or -1 for all users
     date_range : tuple or None, default=None
         Optional (start_date, end_date) tuple for filtering
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
-    def __init__(self, fill_method=None, app_user_id=-1, date_range=None, use_accurate_method=False):
+    def __init__(self, fill_method=None, app_user_id=-1, date_range=None, use_accurate_method=True):
         self.fill_method = fill_method
         self.app_user_id = app_user_id
         self.date_range = date_range
@@ -184,7 +186,7 @@ class ScreentimeProcessor(BaseEstimator, TransformerMixin):
             fill_method=self.fill_method,
             app_user_id=self.app_user_id,
             date_range=self.date_range,
-            use_accurate_method=self.use_accurate_method
+            use_accurate_method=True
         )
 
         return hourly_data
@@ -344,11 +346,11 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
         If None, uses weekly aggregation for PHQ9
     propagate_labels : bool, default=False
         Whether to propagate positive labels to all user entries
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
-    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False, use_accurate_method=False):
+    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False, use_accurate_method=True):
         self.target_type = target_type
         self.time_windows = time_windows
         self.propagate_labels = propagate_labels
@@ -379,7 +381,7 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                 for window in self.time_windows:
                     merged = merge_daily_screentime_features_with_phq9(
                         hours_before_survey=window,
-                        use_accurate_method=self.use_accurate_method
+                        use_accurate_method=True
                     )
                     if self.propagate_labels and not merged.empty:
                         merged = propagate_positive_labels(
@@ -412,7 +414,7 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                     merged = merge_daily_screentime_features_with_risk_labels(
                         label_column=label_col,
                         hours_before_survey=window,
-                        use_accurate_method=self.use_accurate_method
+                        use_accurate_method=True
                     )
 
                     # Filter out N/A labels for sleep (afternoon surveys without sleep data)
@@ -427,6 +429,69 @@ class FeatureLabelMerger(BaseEstimator, TransformerMixin):
                 return merged_dict
             else:
                 raise NotImplementedError("Weekly health-risk merge not yet wrapped")
+
+
+class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
+    """Merges hourly step-window features with PHQ-9 or daily risk labels."""
+
+    def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False,
+                 standardized=True, reference_hour=9):
+        self.target_type = target_type
+        self.time_windows = time_windows
+        self.propagate_labels = propagate_labels
+        self.standardized = standardized
+        self.reference_hour = reference_hour
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X=None):
+        if not self.time_windows:
+            raise NotImplementedError("Step merger currently supports time-window features only")
+
+        merged_dict = {}
+
+        if self.target_type == 'phq9':
+            for window in self.time_windows:
+                merged = merge_daily_step_features_with_phq9(
+                    hours_before_survey=window,
+                    standardized=self.standardized,
+                    reference_hour=self.reference_hour,
+                )
+                if self.propagate_labels and not merged.empty:
+                    merged = propagate_positive_labels(merged, 'severity_label', 'depressed')
+                merged_dict[window] = merged
+            return merged_dict
+
+        label_col_map = {
+            'suicide_risk': 'suicide_risk_label',
+            'self_harm': 'self_harm_risk_label',
+            'sleep': 'sleep_label',
+            'positive_emotion': 'positive_emotion_label',
+            'negative_emotion': 'negative_emotion_label',
+            'social_stress': 'social_stress_label',
+            'social_connection': 'social_connection_label',
+            'minority_stress': 'minority_stress_label',
+            'emotion_regulation': 'emotion_regulation_label'
+        }
+        label_col = label_col_map.get(self.target_type)
+        if label_col is None:
+            raise ValueError(f"Unknown target_type: {self.target_type}")
+
+        for window in self.time_windows:
+            merged = merge_daily_step_features_with_risk_labels(
+                label_column=label_col,
+                hours_before_survey=window,
+                standardized=self.standardized,
+                reference_hour=self.reference_hour,
+            )
+            if self.target_type == 'sleep' and not merged.empty:
+                merged = merged[merged['sleep_label'] != 'N/A']
+            if self.propagate_labels and not merged.empty:
+                merged = propagate_positive_labels(merged, label_col, 'at_risk')
+            merged_dict[window] = merged
+
+        return merged_dict
 
 
 class FeatureSelector(BaseEstimator, TransformerMixin):
@@ -644,8 +709,8 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         Size of each sub-window in hours
     propagate_labels : bool, default=False
         Whether to propagate positive labels to all user entries
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     """
 
     def __init__(self, target_type='suicide_risk', lookback_hours=12,
@@ -701,7 +766,7 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         if self.target_type == 'phq9':
             hourly_features = merge_daily_screentime_features_with_phq9(
                 hours_before_survey=self.lookback_hours,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
             if self.standardized and not hourly_features.empty:
                 if 'survey_timestamp' in hourly_features.columns:
@@ -730,7 +795,7 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
             hourly_features = merge_daily_screentime_features_with_risk_labels(
                 label_column=label_col,
                 hours_before_survey=self.lookback_hours,
-                use_accurate_method=self.use_accurate_method
+                use_accurate_method=True
             )
             if self.standardized and not hourly_features.empty:
                 if 'survey_timestamp' in hourly_features.columns:

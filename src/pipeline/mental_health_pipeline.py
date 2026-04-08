@@ -37,6 +37,7 @@ from src.pipeline.transformers import (
     HealthDataProcessor,
     LabelExtractor,
     FeatureLabelMerger,
+    StepFeatureLabelMerger,
     SubWindowFeatureLabelMerger,
     ScreentimeAppCategorizer
 )
@@ -70,8 +71,8 @@ def create_screentime_risk_pipeline(
         Optional date range filter
     propagate_labels : bool, default=False
         Whether to propagate positive labels
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     --------
@@ -88,7 +89,7 @@ def create_screentime_risk_pipeline(
             target_type=target_type,
             time_windows=time_windows,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method
+            use_accurate_method=True
         ))
     ]
 
@@ -101,7 +102,7 @@ def create_screentime_phq9_pipeline(
     app_user_id=-1,
     date_range=None,
     propagate_labels=False,
-    use_accurate_method=False
+    use_accurate_method=True
 ):
     """
     Create a pipeline for PHQ-9 depression prediction using screentime data.
@@ -118,8 +119,8 @@ def create_screentime_phq9_pipeline(
         Optional date range filter
     propagate_labels : bool, default=False
         Whether to propagate positive labels
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
 
     Returns:
     --------
@@ -133,11 +134,54 @@ def create_screentime_phq9_pipeline(
             target_type='phq9',
             time_windows=time_windows,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method
+            use_accurate_method=True
         ))
     ]
 
     return Pipeline(steps)
+
+
+def create_step_risk_pipeline(
+    target_type='suicide_risk',
+    time_windows=None,
+    propagate_labels=False,
+    standardized=True,
+    reference_hour=9,
+):
+    """Create a pipeline for risk prediction using step windows before survey time."""
+    if time_windows is None:
+        time_windows = [3, 6, 9, 12]
+
+    return Pipeline([
+        ('merge_features_labels', StepFeatureLabelMerger(
+            target_type=target_type,
+            time_windows=time_windows,
+            propagate_labels=propagate_labels,
+            standardized=standardized,
+            reference_hour=reference_hour,
+        ))
+    ])
+
+
+def create_step_phq9_pipeline(
+    time_windows=None,
+    propagate_labels=False,
+    standardized=True,
+    reference_hour=9,
+):
+    """Create a pipeline for PHQ-9 prediction using step windows before survey time."""
+    if time_windows is None:
+        time_windows = [3, 6, 9, 12]
+
+    return Pipeline([
+        ('merge_features_labels', StepFeatureLabelMerger(
+            target_type='phq9',
+            time_windows=time_windows,
+            propagate_labels=propagate_labels,
+            standardized=standardized,
+            reference_hour=reference_hour,
+        ))
+    ])
 
 
 def create_health_weekly_pipeline(
@@ -433,7 +477,7 @@ def create_subwindow_pipeline(
     lookback_hours=12,
     subwindow_hours=3,
     propagate_labels=False,
-    use_accurate_method=False,
+    use_accurate_method=True,
     standardized=True
 ):
     """
@@ -456,8 +500,8 @@ def create_subwindow_pipeline(
         Size of each sub-window in hours
     propagate_labels : bool, default=False
         Whether to propagate positive labels
-    use_accurate_method : bool, default=False
-        If True, uses calculate_accurate_screentime_from_app_table for more precise calculations
+    use_accurate_method : bool, default=True
+        DEPRECATED and ignored. App-table screentime is always used.
     standardized : bool, default=True
         Whether to standardize features
 
@@ -493,7 +537,7 @@ def create_subwindow_pipeline(
             lookback_hours=lookback_hours,
             subwindow_hours=subwindow_hours,
             propagate_labels=propagate_labels,
-            use_accurate_method=use_accurate_method,
+            use_accurate_method=True,
             standardized=standardized
         ))
     ]
