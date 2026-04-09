@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
@@ -482,24 +483,30 @@ def train_one_window(
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
 
-        fig = plt.figure(figsize=(5.5, 5.5))
+        fig = plt.figure(figsize=(6, 6))
         gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
         ax = fig.add_subplot(gs[0, 0])
         metrics_ax = fig.add_subplot(gs[1, 0])
 
-        im = ax.imshow(cm, cmap="Blues")
+        tick_labels = ["class0", "class1"] if not classes else classes
+        heatmap = sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            cbar=False,
+            xticklabels=tick_labels,
+            yticklabels=tick_labels,
+            ax=ax,
+            annot_kws={"fontsize": 10},
+        )
         ax.set_title(f"Confusion Matrix: LSTM {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
-        ax.set_xticks([0, 1])
-        ax.set_yticks([0, 1])
-        ax.set_xticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
-        ax.set_yticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
+        ax.tick_params(axis="x", labelsize=9)
+        ax.tick_params(axis="y", labelsize=9)
 
-        for (i, j), v in np.ndenumerate(cm):
-            ax.text(j, i, str(v), ha="center", va="center", fontsize=10)
-
-        cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+        cbar = fig.colorbar(heatmap.collections[0], ax=ax, fraction=0.045, pad=0.02)
         cbar.ax.tick_params(labelsize=8)
 
         metrics_ax.axis("off")
@@ -509,7 +516,7 @@ def train_one_window(
         )
         metrics_ax.text(0.5, 0.5, metrics_text, ha="center", va="center", fontsize=10)
 
-        fig.subplots_adjust(left=0.10, right=0.86, top=0.90, bottom=0.09)
+        fig.subplots_adjust(left=0.12, right=0.88, top=0.90, bottom=0.09)
         plt.savefig(os.path.join(plots_dir, f"lstm_confusion_matrix_{tag}.png"), dpi=200)
         plt.close(fig)
 
@@ -676,7 +683,7 @@ if __name__ == "__main__":
         lr=float(os.getenv("LEARNING_RATE", "0.001")),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
-        epochs=int(os.getenv("EPOCHS", "70")),
+        epochs=int(os.getenv("EPOCHS", "75")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
         use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
         use_early_stopping=os.getenv("USE_EARLY_STOPPING", "false").lower() == "true",
