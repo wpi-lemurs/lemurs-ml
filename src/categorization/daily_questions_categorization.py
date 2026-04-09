@@ -31,6 +31,12 @@ def yesno_to_int(x):
         return 0
     return None
 
+def averaged_yesno_to_int(x):
+    """Map averaged yes/no values to 0/1. Any mean >= 0.5 is treated as yes."""
+    if x is None or pd.isna(x):
+        return None
+    return 1 if float(x) >= 0.5 else 0
+
 def parse_time_answer(tstr):
     """
     Accepts time strings like '11:23 pm', '23:23', '11:23pm', etc.
@@ -267,10 +273,15 @@ def sleep_label(duration_hours, quality):
 
 # Main extraction & processing
 
-def get_daily_labels_dataframe():
+def get_daily_labels_dataframe(average_shared_labels=False):
     """
     Connect to DB, extract the daily questions we need, compute totals and labels,
     return a DataFrame with raw answers, computed totals, and risk labels.
+
+    Parameters:
+      average_shared_labels: if True, collapse morning+afternoon surveys into one
+      row per user/day by averaging non-sleep items before label computation.
+      If False (default), keep per-survey rows with no averaging.
     """
     db = DatabaseService(**db_config)
     if not db.connect():
@@ -297,6 +308,7 @@ def get_daily_labels_dataframe():
         SELECT
             sr.id AS survey_response_id,
             sr.app_user_id,
+            sr.survey_id,
             sr.timestamp,
             a.question_id,
             a.answer
@@ -309,6 +321,7 @@ def get_daily_labels_dataframe():
     SELECT
         survey_response_id,
         app_user_id,
+        MAX(survey_id) AS survey_id,
         timestamp,
         MAX(CASE WHEN question_id = 2 THEN answer END)  AS q2,
         MAX(CASE WHEN question_id = 3 THEN answer END)  AS q3,
@@ -372,8 +385,7 @@ def get_daily_labels_dataframe():
     finally:
         db.disconnect()
 
-    # Clean / cast fields
-    # Cast numeric 5-scale responses (0-4) to integers when present
+    # Clean / cast fields at per-survey level
     numeric_cols = [
         "q2","q3","q7","q9","q21","q22","q37",
         "q23","q24","q25","q26","q27","q28","q36",
@@ -392,6 +404,45 @@ def get_daily_labels_dataframe():
     for col in yesno_cols:
         if col in df.columns:
             df[col] = df[col].apply(yesno_to_int)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).copy()
+    df["survey_date"] = df["timestamp"].dt.date
+
+    if average_shared_labels:
+        # Create one row per user/day for labels present in both surveys by averaging scores.
+        shared_scale_cols = [
+            "q2","q3","q7","q9","q21","q22","q37",
+            "q23","q24","q25","q26","q27","q28","q36",
+            "q31","q32","q33",
+            "q34","q35",
+            "q40","q41","q42","q43","q44",
+            "q47","q48","q49","q50","q51","q52",
+        ]
+        shared_yesno_cols = ["q5","q8","q11","q12","q13","q15","q16","q17","q18"]
+
+        sort_cols = ["app_user_id", "survey_date", "timestamp"]
+        grouped = df.sort_values(sort_cols).groupby(["app_user_id", "survey_date"], as_index=False)
+
+        daily_shared = grouped.agg(
+            survey_response_id=("survey_response_id", "first"),
+            timestamp=("timestamp", "min"),
+            **{col: (col, "mean") for col in (shared_scale_cols + shared_yesno_cols)}
+        )
+
+        # Sleep comes from morning survey only (survey_id=0), then merged into the single daily row.
+        morning_sleep = (
+            df[df["survey_id"] == 0]
+            .sort_values(sort_cols)
+            .drop_duplicates(["app_user_id", "survey_date"], keep="first")
+            [["app_user_id", "survey_date", "q54", "q55", "q56"]]
+        )
+
+        df = daily_shared.merge(morning_sleep, on=["app_user_id", "survey_date"], how="left")
+
+        for col in shared_yesno_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(averaged_yesno_to_int)
 
     # Compute totals
     # Positive emotion total: q21 + q22 + q37
@@ -440,24 +491,24 @@ def get_daily_labels_dataframe():
     if "q56" in df.columns:
         df["sleep_quality"] = df["q56"].apply(lambda x: safe_int(x, default=None))
 
-    # Compute binary labels
+    # Compute binary labels from the daily-averaged score profile.
     df["suicide_risk_label"] = df.apply(
         lambda r: suicide_risk_label(
-            safe_int(r.get("q2")), safe_int(r.get("q3")),
-            yesno_to_int(r.get("q5")), safe_int(r.get("q7")),
-            yesno_to_int(r.get("q8")), yesno_to_int(r.get("q12")),
-            yesno_to_int(r.get("q13"))
+            r.get("q2"), r.get("q3"),
+            r.get("q5"), r.get("q7"),
+            r.get("q8"), r.get("q12"),
+            r.get("q13")
         ), axis=1
     )
 
     df["self_harm_risk_label"] = df.apply(
         lambda r: self_harm_risk_label(
-            safe_int(r.get("q9")),
-            yesno_to_int(r.get("q11")),
-            yesno_to_int(r.get("q15")),
-            yesno_to_int(r.get("q16")),
-            yesno_to_int(r.get("q17")),
-            yesno_to_int(r.get("q18"))
+            r.get("q9"),
+            r.get("q11"),
+            r.get("q15"),
+            r.get("q16"),
+            r.get("q17"),
+            r.get("q18")
         ),
         axis=1
     )
@@ -486,14 +537,20 @@ def get_daily_labels_dataframe():
         lambda t: emotion_regulation_label(t) if not pd.isna(t) else None
     )
 
-    CUTOFF_HOUR = 14  # morning survey closes at 13, afternoon opens at 15; we only need a sleep label for morning, as no sleep data is recorded in the afternoon
-    df["sleep_label"] = df.apply(
-        lambda r: (
-            'N/A' if r.get("timestamp").hour >= CUTOFF_HOUR
-            else sleep_label(r.get("sleep_hours"), r.get("sleep_quality"))
-        ),
-        axis=1
-    )
+    if average_shared_labels:
+        df["sleep_label"] = df.apply(
+            lambda r: sleep_label(r.get("sleep_hours"), r.get("sleep_quality")),
+            axis=1
+        )
+    else:
+        # Sleep items are only valid for morning survey rows.
+        df["sleep_label"] = df.apply(
+            lambda r: (
+                "N/A" if r.get("survey_id") != 0
+                else sleep_label(r.get("sleep_hours"), r.get("sleep_quality"))
+            ),
+            axis=1
+        )
 
     return df
 

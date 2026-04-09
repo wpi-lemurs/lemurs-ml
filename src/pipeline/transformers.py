@@ -435,12 +435,13 @@ class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
     """Merges hourly step-window features with PHQ-9 or daily risk labels."""
 
     def __init__(self, target_type='phq9', time_windows=None, propagate_labels=False,
-                 standardized=True, reference_hour=9):
+                 standardized=True, reference_hour=9, average_shared_labels=False):
         self.target_type = target_type
         self.time_windows = time_windows
         self.propagate_labels = propagate_labels
         self.standardized = standardized
         self.reference_hour = reference_hour
+        self.average_shared_labels = average_shared_labels
 
     def fit(self, X, y=None):
         return self
@@ -484,6 +485,7 @@ class StepFeatureLabelMerger(BaseEstimator, TransformerMixin):
                 hours_before_survey=window,
                 standardized=self.standardized,
                 reference_hour=self.reference_hour,
+                average_shared_labels=self.average_shared_labels,
             )
             if self.target_type == 'sleep' and not merged.empty:
                 merged = merged[merged['sleep_label'] != 'N/A']
