@@ -410,13 +410,13 @@ def train_one_window(
             fold_acc = accuracy_score(fold_targets, fold_preds)
             fold_f1 = f1_score(fold_targets, fold_preds, zero_division=0)
             fold_cm = confusion_matrix(fold_targets, fold_preds, labels=[0, 1])
-            fold_sens, fold_spec_val = _binary_metrics_from_cm(fold_cm)
-            fold_bal = _balanced_accuracy_from_sens_spec(fold_sens, fold_spec_val)
+            fold_sensitivity, fold_specificity = _binary_metrics_from_cm(fold_cm)
+            fold_bal = _balanced_accuracy_from_sens_spec(fold_sensitivity, fold_specificity)
 
             fold_accs.append(fold_acc)
             fold_f1s.append(fold_f1)
-            fold_sens.append(fold_sens)
-            fold_spec.append(fold_spec_val)
+            fold_sens.append(fold_sensitivity)
+            fold_spec.append(fold_specificity)
             fold_bal_acc.append(fold_bal)
 
         if successful_folds == 0:
@@ -673,7 +673,7 @@ def print_summary(results: Dict[int, dict]):
 
 if __name__ == "__main__":
     results = run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "suicide_risk"),
+        target_type=os.getenv("TARGET_TYPE", "social_connection"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "true").lower() == "true",
@@ -685,9 +685,9 @@ if __name__ == "__main__":
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
         epochs=int(os.getenv("EPOCHS", "75")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
-        use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
+        use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
         use_early_stopping=os.getenv("USE_EARLY_STOPPING", "false").lower() == "true",
-        debug_shapes=os.getenv("DEBUG_SHAPES", "true").lower() == "true",
+        debug_shapes=os.getenv("DEBUG_SHAPES", "false").lower() == "true",
     )
     print_summary(results)
 
