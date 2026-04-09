@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
@@ -28,16 +29,22 @@ def _select_pipeline(
     target_type: str,
     time_windows: Iterable[int],
     propagate_labels: bool,
+    average_shared_labels: bool = True,
 ):
     if target_type == "phq9":
         return create_step_phq9_pipeline(
             time_windows=list(time_windows),
             propagate_labels=propagate_labels,
         )
+    # Sleep labels are derived from morning survey sleep items, so shared-label
+    # averaging must be disabled to preserve consistent target construction.
+    effective_average_shared_labels = False if target_type == "sleep" else average_shared_labels
+
     return create_step_risk_pipeline(
         target_type=target_type,
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
+        average_shared_labels=effective_average_shared_labels,
     )
 
 
@@ -173,6 +180,7 @@ def _train_evaluate_split(
     device,
     X_early_stop=None,
     y_early_stop=None,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
@@ -244,7 +252,7 @@ def _train_evaluate_split(
         else:
             no_improve_count += 1
 
-        can_stop = early_stopping_patience and early_stopping_patience > 0
+        can_stop = use_early_stopping and early_stopping_patience and early_stopping_patience > 0
         if can_stop and (epoch + 1) >= max(1, min_epochs) and no_improve_count >= early_stopping_patience:
             stopped_early = True
             break
@@ -295,6 +303,7 @@ def train_one_window(
     use_loocv=False,
     group_col="app_user_id",
     inner_val_size=0.2,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
@@ -382,6 +391,7 @@ def train_one_window(
                 device=device,
                 X_early_stop=X_inner_val,
                 y_early_stop=y_inner_val,
+                use_early_stopping=use_early_stopping,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
@@ -400,13 +410,13 @@ def train_one_window(
             fold_acc = accuracy_score(fold_targets, fold_preds)
             fold_f1 = f1_score(fold_targets, fold_preds, zero_division=0)
             fold_cm = confusion_matrix(fold_targets, fold_preds, labels=[0, 1])
-            fold_sens, fold_spec_val = _binary_metrics_from_cm(fold_cm)
-            fold_bal = _balanced_accuracy_from_sens_spec(fold_sens, fold_spec_val)
+            fold_sensitivity, fold_specificity = _binary_metrics_from_cm(fold_cm)
+            fold_bal = _balanced_accuracy_from_sens_spec(fold_sensitivity, fold_specificity)
 
             fold_accs.append(fold_acc)
             fold_f1s.append(fold_f1)
-            fold_sens.append(fold_sens)
-            fold_spec.append(fold_spec_val)
+            fold_sens.append(fold_sensitivity)
+            fold_spec.append(fold_specificity)
             fold_bal_acc.append(fold_bal)
 
         if successful_folds == 0:
@@ -449,6 +459,7 @@ def train_one_window(
             device=device,
             X_early_stop=X_val,
             y_early_stop=y_val,
+            use_early_stopping=use_early_stopping,
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             min_epochs=min_epochs,
@@ -472,24 +483,30 @@ def train_one_window(
         loocv_suffix = "_loocv" if use_loocv else ""
         tag = f"{target_type}_{window_id if window_id is not None else 'val'}{loocv_suffix}"
 
-        fig = plt.figure(figsize=(5.5, 5.5))
+        fig = plt.figure(figsize=(6, 6))
         gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 1.3], hspace=0.25)
         ax = fig.add_subplot(gs[0, 0])
         metrics_ax = fig.add_subplot(gs[1, 0])
 
-        im = ax.imshow(cm, cmap="Blues")
+        tick_labels = ["class0", "class1"] if not classes else classes
+        heatmap = sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            cbar=False,
+            xticklabels=tick_labels,
+            yticklabels=tick_labels,
+            ax=ax,
+            annot_kws={"fontsize": 10},
+        )
         ax.set_title(f"Confusion Matrix: LSTM {target_type} ({tag})", fontsize=12, pad=10, fontweight="bold")
         ax.set_xlabel("Predicted", fontsize=10)
         ax.set_ylabel("Actual", fontsize=10)
-        ax.set_xticks([0, 1])
-        ax.set_yticks([0, 1])
-        ax.set_xticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
-        ax.set_yticklabels(["class0", "class1"] if not classes else classes, fontsize=9)
+        ax.tick_params(axis="x", labelsize=9)
+        ax.tick_params(axis="y", labelsize=9)
 
-        for (i, j), v in np.ndenumerate(cm):
-            ax.text(j, i, str(v), ha="center", va="center", fontsize=10)
-
-        cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+        cbar = fig.colorbar(heatmap.collections[0], ax=ax, fraction=0.045, pad=0.02)
         cbar.ax.tick_params(labelsize=8)
 
         metrics_ax.axis("off")
@@ -499,7 +516,7 @@ def train_one_window(
         )
         metrics_ax.text(0.5, 0.5, metrics_text, ha="center", va="center", fontsize=10)
 
-        fig.subplots_adjust(left=0.10, right=0.86, top=0.90, bottom=0.09)
+        fig.subplots_adjust(left=0.12, right=0.88, top=0.90, bottom=0.09)
         plt.savefig(os.path.join(plots_dir, f"lstm_confusion_matrix_{tag}.png"), dpi=200)
         plt.close(fig)
 
@@ -533,6 +550,7 @@ def run_experiment(
     target_type="sleep",
     time_windows=(24),
     propagate_labels=False,
+    average_shared_labels=False,
     hidden_size=64,
     num_layers=1,
     dropout=0.2,
@@ -543,15 +561,21 @@ def run_experiment(
     batch_size=32,
     use_loocv=False,
     inner_val_size=0.2,
+    use_early_stopping=True,
     early_stopping_patience=5,
     early_stopping_min_delta=1e-4,
     min_epochs=5,
     debug_shapes=False,
 ):
+    effective_average_shared_labels = False if target_type == "sleep" else average_shared_labels
+    if target_type == "sleep" and average_shared_labels:
+        print("[INFO] Ignoring average_shared_labels=True for sleep target; using morning-only sleep labels.")
+
     pipeline = _select_pipeline(
         target_type=target_type,
         time_windows=time_windows,
         propagate_labels=propagate_labels,
+        average_shared_labels=effective_average_shared_labels,
     )
 
     pipeline.fit(None)
@@ -579,6 +603,7 @@ def run_experiment(
                 window_id=window,
                 use_loocv=use_loocv,
                 inner_val_size=inner_val_size,
+                use_early_stopping=use_early_stopping,
                 early_stopping_patience=early_stopping_patience,
                 early_stopping_min_delta=early_stopping_min_delta,
                 min_epochs=min_epochs,
@@ -648,19 +673,21 @@ def print_summary(results: Dict[int, dict]):
 
 if __name__ == "__main__":
     results = run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "self_harm"),
+        target_type=os.getenv("TARGET_TYPE", "social_connection"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
+        average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "true").lower() == "true",
         hidden_size=int(os.getenv("HIDDEN_SIZE", "16")),
         num_layers=int(os.getenv("NUM_LAYERS", "2")),
         dropout=float(os.getenv("DROPOUT", "0.2")),
         lr=float(os.getenv("LEARNING_RATE", "0.001")),
         weight_decay=float(os.getenv("WEIGHT_DECAY", "0.0001")),
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
-        epochs=int(os.getenv("EPOCHS", "20")),
+        epochs=int(os.getenv("EPOCHS", "75")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
-        use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
-        debug_shapes=os.getenv("DEBUG_SHAPES", "true").lower() == "true",
+        use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
+        use_early_stopping=os.getenv("USE_EARLY_STOPPING", "false").lower() == "true",
+        debug_shapes=os.getenv("DEBUG_SHAPES", "false").lower() == "true",
     )
     print_summary(results)
 
