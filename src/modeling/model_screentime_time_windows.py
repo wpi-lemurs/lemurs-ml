@@ -34,8 +34,6 @@ matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
 import xgboost as xgb
-from tabpfn import TabPFNClassifier
-from tabpfn.constants import ModelVersion
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -143,11 +141,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         all_lr_preds = []
         all_rf_preds = []
         all_xgb_preds = []
-        all_tab_preds = []
         all_lr_probs = []
         all_rf_probs = []
         all_xgb_probs = []
-        all_tab_probs = []
         all_y_test = []
         all_baseline_true = []
         all_baseline_pred = []
@@ -196,11 +192,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
 
-                # TabPFN (without scaling)
-                tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
-                tab_model.fit(X_train, y_train)
-                tab_pred = tab_model.predict(X_test)
-
                 # XGBoost (without scaling)
                 # Calculate scale_pos_weight to handle class imbalance
                 class_counts = pd.Series(y_train).value_counts()
@@ -221,7 +212,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 all_lr_preds.extend(lr_pred)
                 all_rf_preds.extend(rf_pred)
                 all_xgb_preds.extend(xgb_pred)
-                all_tab_preds.extend(tab_pred)
                 all_y_test.extend(y_test)
                 successful_folds += 1
 
@@ -244,19 +234,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 except:
                     pass
 
-                try:
-                    tab_prob = tab_model.predict_proba(X_test)[:, 1]
-                    all_tab_probs.extend(tab_prob)
-                except:
-                    pass
-
             except Exception as e:
                 continue
 
         if successful_folds == 0:
             return None
 
-        if len(all_y_test) == 0 or len(all_lr_preds) == 0 or len(all_rf_preds) == 0 or len(all_xgb_preds) == 0 or len(all_tab_preds) == 0:
+        if len(all_y_test) == 0 or len(all_lr_preds) == 0 or len(all_rf_preds) == 0 or len(all_xgb_preds) == 0:
             return None
 
         # Convert labels back to original class names for evaluation
@@ -264,26 +248,22 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         all_lr_preds = np.where(np.array(all_lr_preds) == 1, positive_class, f'not_{positive_class}')
         all_rf_preds = np.where(np.array(all_rf_preds) == 1, positive_class, f'not_{positive_class}')
         all_xgb_preds = np.where(np.array(all_xgb_preds) == 1, positive_class, f'not_{positive_class}')
-        all_tab_preds = np.where(np.array(all_tab_preds) == 1, positive_class, f'not_{positive_class}')
 
         # Convert to numpy arrays for evaluation
         all_y_test = np.array(all_y_test)
         all_lr_preds = np.array(all_lr_preds)
         all_rf_preds = np.array(all_rf_preds)
         all_xgb_preds = np.array(all_xgb_preds)
-        all_tab_preds = np.array(all_tab_preds)
 
         # Calculate metrics across all folds
         lr_balanced_acc = balanced_accuracy_score(all_y_test, all_lr_preds)
         rf_balanced_acc = balanced_accuracy_score(all_y_test, all_rf_preds)
         xgb_balanced_acc = balanced_accuracy_score(all_y_test, all_xgb_preds)
-        tab_balanced_acc = balanced_accuracy_score(all_y_test, all_tab_preds)
 
         # Generate confusion matrices
         lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
         rf_cm = confusion_matrix(all_y_test, all_rf_preds, labels=label_order)
         xgb_cm = confusion_matrix(all_y_test, all_xgb_preds, labels=label_order)
-        tab_cm = confusion_matrix(all_y_test, all_tab_preds, labels=label_order)
 
         baseline_cm = None
         baseline_balanced_acc = None
@@ -308,11 +288,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'lr_balanced_accuracy': lr_balanced_acc,
             'rf_balanced_accuracy': rf_balanced_acc,
             'xgb_balanced_accuracy': xgb_balanced_acc,
-            'tab_balanced_accuracy': tab_balanced_acc,
             'lr_confusion_matrix': lr_cm.tolist(),
             'rf_confusion_matrix': rf_cm.tolist(),
-            'xgb_confusion_matrix': xgb_cm.tolist(),
-            'tab_confusion_matrix': tab_cm.tolist()
+            'xgb_confusion_matrix': xgb_cm.tolist()
         }
 
         if baseline_cm is not None:
@@ -335,11 +313,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['xgb_f1_score'] = f1_score(all_y_test, all_xgb_preds, pos_label=positive_class, average='binary')
         except:
             results['xgb_f1_score'] = None
-        
-        try:
-            results['tab_f1_score'] = f1_score(all_y_test, all_tab_preds, pos_label=positive_class, average='binary')
-        except:
-            results['tab_f1_score'] = None
 
         # Feature importance (train on full dataset)
         rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
@@ -488,25 +461,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         except:
             results['xgb_f1_score'] = None
 
-        # Train TabPFN
-        tab_model = TabPFNClassifier.create_default_for_version(ModelVersion.V2)
-        tab_model.fit(X_train, y_train)
-        tab_pred = tab_model.predict(X_test)
-        tab_balanced_acc = balanced_accuracy_score(y_test, tab_pred)
-
-        # Generate confusion matrix with explicit label order
-        # convert labels back to original class names for confusion matrix
-        tab_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
-        tab_pred = np.where(tab_pred == 1, positive_class, f'not_{positive_class}')
-        tab_cm = confusion_matrix(tab_y_test, tab_pred, labels=label_order)
-        results['tab_confusion_matrix'] = tab_cm.tolist()
-
-        results['tab_balanced_accuracy'] = tab_balanced_acc
-        try:
-            results['tab_f1_score'] = f1_score(tab_y_test, tab_pred, pos_label=positive_class, average='binary')
-        except:
-            results['tab_f1_score'] = None
-
         return results
 
 
@@ -603,20 +557,6 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                 title += f' | F1: {result["baseline_f1_score"]:.3f}'
             axes[idx, 3].set_title(title)
             axes[idx, 3].set_ylabel('True Label')
-            axes[idx, 3].set_xlabel('Predicted Label')'''
-
-        # Plot TabPFN confusion matrix
-        if 'tab_confusion_matrix' in result:
-            tab_cm = np.array(result['tab_confusion_matrix'])
-            sns.heatmap(tab_cm, annot=True, fmt='d', cmap='Blues',
-                       xticklabels=labels, yticklabels=labels,
-                       ax=axes[idx, 3], cbar=True)
-            # Build title with F1 score if available
-            title = f'TabPFN - {time_window}h window\nBalanced Accuracy: {result["tab_balanced_accuracy"]:.3f}'
-            if 'tab_f1_score' in result and result['tab_f1_score'] is not None:
-                title += f' | F1: {result["tab_f1_score"]:.3f}'
-            axes[idx, 3].set_title(title)
-            axes[idx, 3].set_ylabel('True Label')
             axes[idx, 3].set_xlabel('Predicted Label')
 
     plt.tight_layout()
@@ -642,7 +582,6 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                 if 'baseline_balanced_accuracy' in all_results[i] and all_results[i]['baseline_balanced_accuracy'] is not None
                 else all_results[i]['baseline_accuracy'] #TODO fix for balanced accuracy
             )
-        best_tab_idx = max(range(len(all_results)), key=lambda i: all_results[i]['tab_balanced_accuracy'])
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
@@ -705,24 +644,10 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             axes[3].set_title(title, fontsize=12, fontweight='bold')
             axes[3].set_ylabel('True Label', fontsize=11)
             axes[3].set_xlabel('Predicted Label', fontsize=11)
-        '''else:
+        else:
             axes[3].axis('off')
             axes[3].text(0.5, 0.5, 'Baseline unavailable\n(no prior surveys)',
-                         ha='center', va='center', fontsize=12)'''
-
-        # Best TabPFN
-        best_tab = all_results[best_tab_idx]
-        tab_cm = np.array(best_tab['tab_confusion_matrix'])
-        sns.heatmap(tab_cm, annot=True, fmt='d', cmap='Blues',
-                   xticklabels=labels, yticklabels=labels,
-                   ax=axes[3], cbar=True, annot_kws={'size': 14})
-        # Build title with F1 score if available
-        title = f'Best TabPFN\n{best_tab["time_window"]}h window - Balanced Accuracy: {best_tab["tab_balanced_accuracy"]:.3f}'
-        if 'tab_f1_score' in best_tab and best_tab['tab_f1_score'] is not None:
-            title += f' | F1: {best_tab["tab_f1_score"]:.3f}'
-        axes[3].set_title(title, fontsize=12, fontweight='bold')
-        axes[3].set_ylabel('True Label', fontsize=11)
-        axes[3].set_xlabel('Predicted Label', fontsize=11)
+                         ha='center', va='center', fontsize=12)
 
         plt.tight_layout()
 
@@ -814,11 +739,10 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
         display_cols = ['time_window', 'total_samples']
-        # TEMP: for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'baseline_balanced_accuracy']:
-        for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'tab_balanced_accuracy']:
+        for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'baseline_balanced_accuracy']:
             if col in comparison_df.columns:
                 display_cols.append(col)
-        for col in ['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'tab_f1_score']: #TEMP
+        for col in ['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'baseline_f1_score']:
             if col in comparison_df.columns:
                 display_cols.append(col)
         print(comparison_df[display_cols].to_string(index=False))
@@ -827,7 +751,6 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         best_lr_window = comparison_df.loc[comparison_df['lr_balanced_accuracy'].idxmax()]
         best_rf_window = comparison_df.loc[comparison_df['rf_balanced_accuracy'].idxmax()]
         best_xgb_window = comparison_df.loc[comparison_df['xgb_balanced_accuracy'].idxmax()]
-        best_tab_window = comparison_df.loc[comparison_df['tab_balanced_accuracy'].idxmax()]  
 
         print(f"\n" + "="*80)
         print("BEST PERFORMING TIME WINDOWS")
@@ -846,11 +769,6 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         print(f"  Best window: {best_xgb_window['time_window']}h")
         print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
         print(f"  Balanced Accuracy: {best_xgb_window['xgb_balanced_accuracy']:.4f}")
-
-        print(f"\nTabPFN:")
-        print(f"  Best window: {best_tab_window['time_window']}h")
-        print(f"  F1 Score: {best_tab_window['tab_f1_score']:.4f}")
-        print(f"  Balanced Accuracy: {best_tab_window['tab_balanced_accuracy']:.4f}")
 
         if 'baseline_balanced_accuracy' in comparison_df.columns:
             print(f"\nBaseline Model:")
