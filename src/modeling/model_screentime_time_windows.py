@@ -80,6 +80,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     Returns:
     - Dictionary with model performance metrics
     """
+    print(f" Total users: {data['app_user_id'].nunique()}")
     if data.empty:
         print(f"  No data found for {time_window} hour window")
         return None
@@ -172,9 +173,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             if y_train.nunique() < 2:
                 continue
 
-            if y_test.nunique() < 1:
-                continue
-
             # Scale features for Logistic Regression
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
@@ -197,11 +195,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 class_counts = pd.Series(y_train).value_counts()
                 scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
                 
-                # TODO: Tune hyperparameters (GridSearchCV?)
                 xgb_model = xgb.XGBClassifier(
-                    n_estimators=600, 
-                    max_depth=5, 
-                    learning_rate=0.05, 
+                    n_estimators=600,
+                    max_depth=5,
+                    learning_rate=0.05,
                     scale_pos_weight=scale_pos_weight,
                     random_state=42
                 )
@@ -545,14 +542,14 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
             axes[idx, 2].set_ylabel('True Label')
             axes[idx, 2].set_xlabel('Predicted Label')
         
-        '''# Plot Baseline confusion matrix
+        # Plot Baseline confusion matrix
         if 'baseline_confusion_matrix' in result:
             baseline_cm = np.array(result['baseline_confusion_matrix'])
             sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 3], cbar=True)
             # Build title with F1 score if available
-            title = f'Baseline - {time_window}h window\nAccuracy: {result["baseline_accuracy"]:.3f}'
+            title = f'Baseline - {time_window}h window\nBalanced Accuracy: {result["baseline_balanced_accuracy"]:.3f}'
             if 'baseline_f1_score' in result and result['baseline_f1_score'] is not None:
                 title += f' | F1: {result["baseline_f1_score"]:.3f}'
             axes[idx, 3].set_title(title)
@@ -573,15 +570,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_balanced_accuracy'])
         best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_balanced_accuracy'])
         best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_balanced_accuracy'])
-        # has_baseline = all('baseline_accuracy' in r for r in all_results)
-        has_baseline = False # TEMPORARY
-        if has_baseline:
-            best_baseline_idx = max(
-                range(len(all_results)),
-                key=lambda i: all_results[i]['baseline_balanced_accuracy']
-                if 'baseline_balanced_accuracy' in all_results[i] and all_results[i]['baseline_balanced_accuracy'] is not None
-                else all_results[i]['baseline_accuracy'] #TODO fix for balanced accuracy
-            )
+        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_balanced_accuracy'])
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
@@ -593,61 +582,56 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         lr_cm = np.array(best_lr['lr_confusion_matrix'])
         sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[0], cbar=True, annot_kws={'size': 14})
+                   ax=axes[0], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
         title = f'Best Logistic Regression\n{best_lr["time_window"]}h window - Balanced Accuracy: {best_lr["lr_balanced_accuracy"]:.3f}'
         if 'lr_f1_score' in best_lr and best_lr['lr_f1_score'] is not None:
             title += f' | F1: {best_lr["lr_f1_score"]:.3f}'
-        axes[0].set_title(title, fontsize=12, fontweight='bold')
-        axes[0].set_ylabel('True Label', fontsize=11)
-        axes[0].set_xlabel('Predicted Label', fontsize=11)
+        axes[0].set_title(title, fontsize=14, fontweight='bold')
+        axes[0].set_ylabel('True Label', fontsize=16)
+        axes[0].set_xlabel('Predicted Label', fontsize=16)
 
         # Best Random Forest
         best_rf = all_results[best_rf_idx]
         rf_cm = np.array(best_rf['rf_confusion_matrix'])
         sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[1], cbar=True, annot_kws={'size': 14})
+                   ax=axes[1], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
         title = f'Best Random Forest\n{best_rf["time_window"]}h window - Balanced Accuracy: {best_rf["rf_balanced_accuracy"]:.3f}'
         if 'rf_f1_score' in best_rf and best_rf['rf_f1_score'] is not None:
             title += f' | F1: {best_rf["rf_f1_score"]:.3f}'
-        axes[1].set_title(title, fontsize=12, fontweight='bold')
-        axes[1].set_ylabel('True Label', fontsize=11)
-        axes[1].set_xlabel('Predicted Label', fontsize=11)
+        axes[1].set_title(title, fontsize=14, fontweight='bold')
+        axes[1].set_ylabel('True Label', fontsize=16)
+        axes[1].set_xlabel('Predicted Label', fontsize=16)
 
         # Best XGBoost
         best_xgb = all_results[best_xgb_idx]
         xgb_cm = np.array(best_xgb['xgb_confusion_matrix'])
         sns.heatmap(xgb_cm, annot=True, fmt='d', cmap='Purples',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[2], cbar=True, annot_kws={'size': 14})
+                   ax=axes[2], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
         title = f'Best XGBoost\n{best_xgb["time_window"]}h window - Balanced Accuracy: {best_xgb["xgb_balanced_accuracy"]:.3f}'
         if 'xgb_f1_score' in best_xgb and best_xgb['xgb_f1_score'] is not None:
             title += f' | F1: {best_xgb["xgb_f1_score"]:.3f}'
-        axes[2].set_title(title, fontsize=12, fontweight='bold')
-        axes[2].set_ylabel('True Label', fontsize=11)
-        axes[2].set_xlabel('Predicted Label', fontsize=11)
+        axes[2].set_title(title, fontsize=14, fontweight='bold')
+        axes[2].set_ylabel('True Label', fontsize=16)
+        axes[2].set_xlabel('Predicted Label', fontsize=16)
 
-        # Best Baseline (available when prior surveys exist in evaluation rows)
-        if has_baseline:
-            best_baseline = all_results[best_baseline_idx]
-            baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
-            sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
-                       xticklabels=labels, yticklabels=labels,
-                       ax=axes[3], cbar=True, annot_kws={'size': 14})
-            # Build title with F1 score if available
-            title = f'Baseline\n{best_baseline["time_window"]}h window - Balanced Accuracy: {best_baseline["baseline_balanced_accuracy"]:.3f}'
-            if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
-                title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
-            axes[3].set_title(title, fontsize=12, fontweight='bold')
-            axes[3].set_ylabel('True Label', fontsize=11)
-            axes[3].set_xlabel('Predicted Label', fontsize=11)
-        else:
-            axes[3].axis('off')
-            axes[3].text(0.5, 0.5, 'Baseline unavailable\n(no prior surveys)',
-                         ha='center', va='center', fontsize=12)
+        # Best Baseline
+        best_baseline = all_results[best_baseline_idx]
+        baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
+        sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
+                    xticklabels=labels, yticklabels=labels,
+                    ax=axes[3], cbar=True, annot_kws={'size': 20})
+        # Build title with F1 score if available
+        title = f'Baseline\n{best_baseline["time_window"]}h window - Balanced Accuracy: {best_baseline["baseline_balanced_accuracy"]:.3f}'
+        if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
+            title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
+        axes[3].set_title(title, fontsize=14, fontweight='bold')
+        axes[3].set_ylabel('True Label', fontsize=16)
+        axes[3].set_xlabel('Predicted Label', fontsize=16)
 
         plt.tight_layout()
 
