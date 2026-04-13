@@ -49,7 +49,7 @@ AVAILABLE_LABELS = {
     'minority_stress': 'minority_stress_label',
     'emotion_regulation': 'emotion_regulation_label',
     'sleep': 'sleep_label',
-    'phq9': 'severity_label'  # PHQ-9 depression
+    'phq9': 'severity_label'
 }
 
 POSITIVE_CLASS_MAP = {
@@ -120,6 +120,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     hour_cols = [f'hour_{i}' for i in range(time_window)]
     X = data[hour_cols]
     y = data[label_col]
+    assert X.index.equals(y.index) # make sure we didn't accidentally reorder the data in processing
+
     # convert labels to binary (0 and 1)
     y = (y == positive_class).astype(int)
 
@@ -575,7 +577,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
         fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
-                     fontsize=16, fontweight='bold')
+                     fontsize=18, fontweight='bold')
 
         # Best Logistic Regression
         best_lr = all_results[best_lr_idx]
