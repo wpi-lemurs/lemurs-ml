@@ -78,7 +78,6 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
 
     # FILTER OUT LAUNCHER AND CONTROLLER APPS
     # Launcher apps (home screens) and controller apps don't represent meaningful user activity for ML
-    before_filter = len(df)
     filter_mask = df['app_name'].str.contains('launcher|controller', case=False, na=False, regex=True)
     num_filtered_records = filter_mask.sum()
     filtered_apps = df[filter_mask]['app_name'].unique()
