@@ -61,6 +61,11 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
     original_len = len(df)
     print(f"\nRecords before deduplication: {original_len:,}")
 
+    # TODO: SCREENTIME DATA COLLECTION HAS SINCE BEEN FIXED TO AVOID CUMULATIVE RECORDS
+    # TODO: FILTER OUT ALL RECORDS FROM LEMURS TEAM BASED ON USER ID
+    # All data after 4/1/2026 should be clean from our initial fix, but a WIP fix as of 4/14/2026
+    # may improve this.
+
     # DEDUPLICATION: Keep only the most recent record for each app per screentime_id
     # Since total_time_ms is cumulative, we want the latest record which has the final count
     df['last_time_used'] = pd.to_datetime(df['last_time_used'])
