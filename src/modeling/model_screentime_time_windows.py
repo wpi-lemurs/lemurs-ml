@@ -160,10 +160,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
             test_user = groups.iloc[test_idx].iloc[0]
-            # Train baseline model using previous survey label
-            baseline_df = data.iloc[test_idx][['survey_timestamp', label_col]].copy()
-            baseline_df = baseline_df.sort_values('survey_timestamp')
-            # get label for user's previous survey (only one user since it's the test set of LOOCV)
+            baseline_df = data.iloc[test_idx][[timestamp_col, label_col]].copy()
+            baseline_df = baseline_df.sort_values(timestamp_col)
+            # make all labels the user's first label
+            baseline_df['baseline_pred'] = baseline_df[label_col].iloc[0]
             baseline_df['baseline_pred'] = baseline_df[label_col].shift(1)
             # remove first survey (no data before it to use)
             baseline_df = baseline_df.dropna(subset=['baseline_pred'])
@@ -353,11 +353,9 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         }
 
         # Train baseline model using previous survey label
-
-        baseline_df = data.sort_values(['app_user_id', 'survey_timestamp'])
-
-        # get label for each user's previous survey
-        baseline_df['baseline_pred'] = baseline_df.groupby('app_user_id')[label_col].shift(1)
+        baseline_df = data.sort_values(['app_user_id', timestamp_col])
+        # make all labels the user's first label
+        baseline_df['baseline_pred'] = baseline_df.groupby('app_user_id')[label_col].transform('first')
         # remove first survey (no data before it to use)
         baseline_df = baseline_df.dropna(subset=['baseline_pred'])
 
