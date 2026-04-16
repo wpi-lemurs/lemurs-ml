@@ -62,7 +62,6 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
     print(f"\nRecords before deduplication: {original_len:,}")
 
     # TODO: SCREENTIME DATA COLLECTION HAS SINCE BEEN FIXED TO AVOID CUMULATIVE RECORDS
-    # TODO: FILTER OUT ALL RECORDS FROM LEMURS TEAM BASED ON USER ID
     # All data after 4/1/2026 should be clean from our initial fix, but a WIP fix as of 4/14/2026
     # may improve this.
 
