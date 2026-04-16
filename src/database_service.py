@@ -193,8 +193,52 @@ class DatabaseService:
 
             df = pd.read_sql(query, self.connection)
             # logger.info(f"Retrieved {len(df)} records from {table_name}")
+            df = self.remove_test_users(df, table_name)
             return df
 
         except Exception as e:
             logger.error(f"Error extracting data from {table_name}: {e}")
+            raise
+
+    def remove_test_users(self, df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+        '''
+        Remove records associated with test users.
+        '''
+        # Connect if not already connected
+        if not self.connection or self.connection.closed:
+            if not self.connect():
+                raise Exception("Failed to connect to database")
+            
+        query = f"""
+        SELECT DISTINCT app_user_id
+        FROM umass_id
+        WHERE umass_id LIKE '%-test%'
+        """
+        try:        
+            test_users_df = pd.read_sql(query, self.connection)
+            test_user_ids = set(test_users_df['app_user_id'])
+            logger.info(f"Identified {len(test_user_ids)} test users to remove")
+
+            # Filter out records with test user ids
+
+            # check if 'app_user_id' column exists
+            cursor = self.connection.cursor()
+            check_query = f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{table_name}' AND column_name = 'app_user_id'
+            """
+            cursor.execute(check_query)
+            has_user_id = cursor.fetchone() is not None
+            cursor.close()
+
+            if has_user_id:
+                filtered_df = df[~df['app_user_id'].isin(test_user_ids)].copy()
+                logger.info(f"Removed {len(df) - len(filtered_df)} records associated with test users")
+                return filtered_df
+            else:
+                return df
+            
+        except Exception as e:
+            logger.error(f"Error removing test users: {e}")
             raise
