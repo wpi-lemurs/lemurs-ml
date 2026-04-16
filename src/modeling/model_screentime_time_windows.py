@@ -318,7 +318,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
         rf_full.fit(X, y)
         feature_importance = pd.DataFrame({
-            'hour': hour_cols,
+            'feature': feature_names,
             'importance': rf_full.feature_importances_
         }).sort_values('importance', ascending=False)
 
@@ -462,7 +462,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
         # Feature importance for Random Forest
         feature_importance = pd.DataFrame({
-            'hour': hour_cols,
+            'feature': feature_names,
             'importance': rf_model.feature_importances_
         }).sort_values('importance', ascending=False)
 
@@ -776,7 +776,15 @@ def main(target_type='phq9', propagate_labels=False,
             )
 
         # Train and evaluate models
-        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
+        results = train_and_evaluate_models(
+            screentime_data,
+            hours,
+            target_type=target_type,
+            propagate_labels=propagate_labels,
+            balanced_class_weight=balanced_class_weight,
+            use_loocv=use_loocv,
+            tune_models=tune_models
+        )
         if results:
             all_results.append(results)
 
