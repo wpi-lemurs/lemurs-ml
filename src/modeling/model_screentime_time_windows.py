@@ -65,7 +65,8 @@ POSITIVE_CLASS_MAP = {
     'sleep': 'at_risk'
 }
 
-def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
+def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False,
+                              balanced_class_weight=False, use_loocv=False, tune_models=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -76,6 +77,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
+    - tune_models: if True, run GridSearchCV for parameter tuning
 
     Returns:
     - Dictionary with model performance metrics
@@ -159,12 +161,11 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-            test_user = groups.iloc[test_idx].iloc[0]
+            # Train baseline model using previous survey label
             baseline_df = data.iloc[test_idx][[timestamp_col, label_col]].copy()
             baseline_df = baseline_df.sort_values(timestamp_col)
             # make all labels the user's first label
             baseline_df['baseline_pred'] = baseline_df[label_col].iloc[0]
-            baseline_df['baseline_pred'] = baseline_df[label_col].shift(1)
             # remove first survey (no data before it to use)
             baseline_df = baseline_df.dropna(subset=['baseline_pred'])
             
@@ -377,15 +378,35 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         except Exception:
             results['baseline_f1_score'] = None
 
-        # Scale features for Logistic Regression
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
 
         # Train Logistic Regression (with scaled data)
-        lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
-        lr_model.fit(X_train_scaled, y_train)
-        lr_pred = lr_model.predict(X_test_scaled)
+        if tune_models:
+            lr_base = Pipeline([
+                ('scaler', StandardScaler()),
+                ('model', LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight))
+            ])
+            lr_grid = {
+                'model__C': [0.01, 0.1, 1.0, 10.0, 100.0],
+                'model__solver': ['liblinear', 'lbfgs', 'newton-cholesky']
+            }
+
+            lr_search = GridSearchCV(
+                estimator=lr_base,
+                param_grid=lr_grid,
+                scoring='balanced_accuracy',
+                cv=3,
+                n_jobs=-1
+            )
+            lr_search.fit(X_train, y_train)
+            lr_model = lr_search.best_estimator_
+            print(f"  [{time_window}h] LR best params: {lr_search.best_params_}")
+        else:
+            lr_model = Pipeline([
+                ('scaler', StandardScaler()),
+                ('model', LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight))
+            ])
+            lr_model.fit(X_train, y_train)
+        lr_pred = lr_model.predict(X_test)
         lr_balanced_acc = balanced_accuracy_score(y_test, lr_pred)
 
         # Generate confusion matrix with explicit label order
@@ -402,8 +423,27 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['lr_f1_score'] = None
 
         # Train Random Forest
-        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
-        rf_model.fit(X_train, y_train)
+        if tune_models:
+            rf_base = RandomForestClassifier(random_state=42, class_weight=class_weight)
+            rf_grid = {
+                'n_estimators': [100, 300, 500],
+                'max_depth': [None, 5, 10, 20],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4]
+            }
+            rf_search = GridSearchCV(
+                estimator=rf_base,
+                param_grid=rf_grid,
+                scoring='balanced_accuracy',
+                cv=3,
+                n_jobs=-1
+            )
+            rf_search.fit(X_train, y_train)
+            rf_model = rf_search.best_estimator_
+            print(f"  [{time_window}h] RF best params: {rf_search.best_params_}")
+        else:
+            rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+            rf_model.fit(X_train, y_train)
         rf_pred = rf_model.predict(X_test)
         rf_balanced_acc = balanced_accuracy_score(y_test, rf_pred)
 
@@ -433,15 +473,37 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         class_counts = pd.Series(y_train).value_counts()
         scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
                 
-        # TODO: Tune hyperparameters (GridSearchCV?)
-        xgb_model = xgb.XGBClassifier(
-            n_estimators=600, 
-            max_depth=5, 
-            learning_rate=0.05, 
-            scale_pos_weight=scale_pos_weight,
-            random_state=42
-        )
-        xgb_model.fit(X_train, y_train)
+        if tune_models:
+            xgb_base = xgb.XGBClassifier(
+                random_state=42,
+                scale_pos_weight=scale_pos_weight
+            )
+            xgb_grid = {
+                'n_estimators': [200, 400, 600],
+                'max_depth': [3, 5, 7],
+                'learning_rate': [0.01, 0.05, 0.1],
+                'subsample': [0.8, 1.0],
+                'colsample_bytree': [0.8, 1.0]
+            }
+            xgb_search = GridSearchCV(
+                estimator=xgb_base,
+                param_grid=xgb_grid,
+                scoring='balanced_accuracy',
+                cv=3,
+                n_jobs=-1
+            )
+            xgb_search.fit(X_train, y_train)
+            xgb_model = xgb_search.best_estimator_
+            print(f"  [{time_window}h] XGB best params: {xgb_search.best_params_}")
+        else:
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=600,
+                max_depth=5,
+                learning_rate=0.05,
+                scale_pos_weight=scale_pos_weight,
+                random_state=42
+            )
+            xgb_model.fit(X_train, y_train)
         xgb_pred = xgb_model.predict(X_test)
         xgb_balanced_acc = balanced_accuracy_score(y_test, xgb_pred)
 
@@ -643,7 +705,8 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
 
 
-def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
+def main(target_type='phq9', propagate_labels=False,
+         balanced_class_weight=False, use_loocv=False, tune_models=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
@@ -656,6 +719,7 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
+    - tune_models: if True, run GridSearchCV for parameter tuning
     """
     # Validate target_type
     if target_type not in AVAILABLE_LABELS:
@@ -681,6 +745,8 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     print("Experimenting with different time windows for screentime before surveys...")
     if propagate_labels:
         print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
+    if tune_models:
+        print("NOTE: GridSearchCV tuning is ENABLED")
     print("="*80)
 
     # Time windows to experiment with (in hours)
@@ -778,6 +844,7 @@ if __name__ == '__main__':
     propagate_labels = False
     balanced_class_weight = False
     use_loocv = False
+    tune_models = False
 
     # Parse command line arguments
     if len(sys.argv) > 1:
@@ -803,5 +870,15 @@ if __name__ == '__main__':
         use_loocv = True
         print("Leave-One-Out Cross-Validation enabled")
 
+    if '--tune' in sys.argv or '-t' in sys.argv:
+        tune_models = True
+        print("GridSearchCV tuning enabled")
+
     # Run main with parsed arguments
-    main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
+    main(
+        target_type=target_type,
+        propagate_labels=propagate_labels,
+        balanced_class_weight=balanced_class_weight,
+        use_loocv=use_loocv,
+        tune_models=tune_models
+    )
