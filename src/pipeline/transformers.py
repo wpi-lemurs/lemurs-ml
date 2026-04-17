@@ -524,8 +524,9 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
 
         # Identify label columns
         label_cols = [
-            'severity_label', 'phq9_total_score',
-            'suicide_risk_label', 'self_harm_risk_label', 'sleep_label'
+            'severity_label', 'phq9_total_score', 'suicide_risk_label', 'self_harm_risk_label', 
+            'sleep_label', 'negative_emotion_label', 'positive_emotion_label', 'social_stress_label', 
+            'social_connection_label', 'minority_stress_label', 'emotion_regulation_label'
         ]
 
         all_exclude = self.exclude_cols + label_cols

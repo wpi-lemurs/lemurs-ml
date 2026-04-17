@@ -4,6 +4,7 @@ Experiments with different time windows (n hours before survey) to find optimal 
 Supports all daily labels:
 - phq9 (depression), suicide_risk, self_harm, positive_emotion, negative_emotion
 - social_stress, social_connection, minority_stress, emotion_regulation, sleep
+If adding a new category, be sure to drop its risk label from the training data in FeatureSelector
 
 Usage:
     python model_screentime_time_windows.py phq9               # Depression prediction
@@ -16,15 +17,12 @@ Optional flags:
     --loocv, -l       Use leave-one-user-out cross-validation instead of train/test split
 """
 
-from src.data_processing.merge_passive_data_and_labels import (
-    merge_daily_screentime_features_with_phq9,
-    merge_daily_screentime_features_with_risk_labels,
-    propagate_positive_labels
-)
+from src.data_processing.merge_passive_data_and_labels import propagate_positive_labels
 from src.config import DATA_DIR
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, LeaveOneGroupOut
+from sklearn.model_selection import train_test_split, LeaveOneGroupOut, GridSearchCV
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
@@ -34,6 +32,8 @@ matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
 import xgboost as xgb
+from src.pipeline.mental_health_pipeline import create_subwindow_pipeline
+from src.pipeline.transformers import FeatureSelector
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -64,6 +64,28 @@ POSITIVE_CLASS_MAP = {
     'emotion_regulation': 'at_risk',
     'sleep': 'at_risk'
 }
+
+def _prepare_model_inputs(data):
+    """Prepare model features using the same preprocessing style as the PyTorch LSTM script."""
+    feature_df = data.copy()
+
+    selector = FeatureSelector()
+    selector.fit(feature_df)
+    feature_df = selector.transform(feature_df)
+
+    datetime_cols = feature_df.select_dtypes(include=['datetime64[ns]']).columns
+    cat_cols = feature_df.select_dtypes(include=['str', 'object', 'category', 'bool']).columns
+
+    feature_df = feature_df.drop(columns=list(datetime_cols), errors='ignore')
+
+    if len(cat_cols) > 0:
+        feature_df[cat_cols] = feature_df[cat_cols].fillna('missing')
+        feature_df = pd.get_dummies(feature_df, columns=list(cat_cols), dtype=float)
+
+    numeric_df = feature_df.select_dtypes(include=[np.number]).copy()
+
+    numeric_df = numeric_df.fillna(0)
+    return numeric_df, list(numeric_df.columns)
 
 def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False,
                               balanced_class_weight=False, use_loocv=False, tune_models=False):
@@ -119,8 +141,15 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         return None
 
     # Prepare features and labels
-    hour_cols = [f'hour_{i}' for i in range(time_window)]
-    X = data[hour_cols]
+    X, feature_names = _prepare_model_inputs(data)
+    print(f"  Using preprocessed feature matrix with {len(feature_names)} columns")
+
+    timestamp_col = None
+    if 'survey_timestamp' in data.columns:
+        timestamp_col = 'survey_timestamp'
+    elif 'timestamp' in data.columns:
+        timestamp_col = 'timestamp'
+
     y = data[label_col]
     assert X.index.equals(y.index) # make sure we didn't accidentally reorder the data in processing
 
@@ -729,16 +758,7 @@ def main(target_type='phq9', propagate_labels=False,
         )
 
     # Configure based on target type
-    label_column = AVAILABLE_LABELS[target_type]
     task_name = target_type.replace('_', ' ').upper()
-
-    # Determine if using generic function or PHQ-9 specific function
-    if target_type == 'phq9':
-        merge_function = merge_daily_screentime_features_with_phq9
-        use_generic = False
-    else:
-        merge_function = merge_daily_screentime_features_with_risk_labels
-        use_generic = True
 
     print("="*80)
     print(f"{task_name} PREDICTION - HOURLY SCREENTIME FEATURES")
@@ -750,30 +770,23 @@ def main(target_type='phq9', propagate_labels=False,
     print("="*80)
 
     # Time windows to experiment with (in hours)
-    time_windows = [3,4,5,6,7,8,9]
+    time_windows = [9]
     all_results = []
 
     for hours in time_windows:
 
-        # Get data for this time window using the appropriate merge function
-        if use_generic:
-            # Use the generic function for risk labels
-            screentime_data = merge_function(
-                screentime_df=None,
-                risk_labels_df=None,
-                label_column=label_column,
-                fill_method='zero',
-                hours_before_survey=hours,
-                app_user_id=-1
-            )
-        else:
-            # Use the PHQ-9 specific function
-            screentime_data = merge_function(
-                screentime_df=None,
-                fill_method='zero',
-                hours_before_survey=hours,
-                app_user_id=-1
-            )
+        # Build screentime data using the shared subwindow pipeline for all targets.
+        pipeline = create_subwindow_pipeline(
+            target_type=target_type,
+            lookback_hours=hours,
+            subwindow_hours=1,
+            propagate_labels=False,
+            use_accurate_method=True,
+            standardized=True
+        )
+        pipeline.fit(None)
+        merged_dict = pipeline.transform(None)
+        screentime_data = merged_dict.get(hours, pd.DataFrame())
 
         # Train and evaluate models
         results = train_and_evaluate_models(
