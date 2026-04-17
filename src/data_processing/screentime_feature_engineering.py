@@ -268,7 +268,7 @@ def generate_features_for_all_timepoints(df: pd.DataFrame) -> pd.DataFrame:
 
     # Get all unique submission events (one per screentime_id)
     submission_events = df[['screentime_id', 'app_user_id', 'start_time']].drop_duplicates()
-    submission_events = submission_events.sort_values(['app_user_id', 'start_time'])
+    submission_events = submission_events.sort_values(['app_user_id', 'start_time']).reset_index(drop=True)
 
     print(f"Processing {len(submission_events):,} submission events for {submission_events['app_user_id'].nunique()} users...")
 
@@ -339,7 +339,7 @@ def generate_subwindow_features_for_all_timepoints(df: pd.DataFrame,
 
     # Get all unique submission events (one per screentime_id)
     submission_events = df[['screentime_id', 'app_user_id', 'start_time']].drop_duplicates()
-    submission_events = submission_events.sort_values(['app_user_id', 'start_time'])
+    submission_events = submission_events.sort_values(['app_user_id', 'start_time']).reset_index(drop=True)
 
     print(f"Processing {len(submission_events):,} submission events for {submission_events['app_user_id'].nunique()} users...")
 
