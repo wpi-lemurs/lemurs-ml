@@ -90,6 +90,46 @@ class SafeStratifiedKFold(StratifiedKFold):
         for split in valid_splits:
             yield split
 
+
+def _split_train_test_by_user(data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=None):
+    """
+    Split rows within each user so every user contributes to train and test.
+    In the future, could experiment with different ways to split.
+    """
+    if user_col not in data.columns:
+        raise ValueError(f"Missing required user column: {user_col}")
+
+    train_indices = []
+    test_indices = []
+
+    for _, user_data in data.groupby(user_col, sort=False):
+        user_indices = user_data.index.to_numpy()
+
+        if len(user_indices) < 2:
+            train_indices.extend(user_indices.tolist())
+            continue
+
+        user_y = y.loc[user_indices]
+        stratify_y = user_y if user_y.nunique() > 1 and user_y.value_counts().min() >= 2 else None
+
+        user_train_idx, user_test_idx = train_test_split(
+            user_indices,
+            test_size=test_size,
+            random_state=random_state,
+            shuffle=True,
+            stratify=stratify_y,
+        )
+
+        train_indices.extend(user_train_idx.tolist())
+        test_indices.extend(user_test_idx.tolist())
+
+    X_train = X.loc[train_indices]
+    X_test = X.loc[test_indices]
+    y_train = y.loc[train_indices]
+    y_test = y.loc[test_indices]
+
+    return X_train, X_test, y_train, y_test
+
 def _prepare_model_inputs(data):
     """Prepare model features using the same preprocessing style as the PyTorch LSTM script."""
     feature_df = data.copy()
@@ -393,13 +433,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     else:
         # Standard train/test split
         try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.3, random_state=42, stratify=y
-            )
+            X_train, X_test, y_train, y_test = _split_train_test_by_user(
+                data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=y)
         except ValueError as e:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.3, random_state=42, stratify=None
-            )
+            print(f"  [{time_window}h] Warning: Stratified split failed due to class imbalance. Falling back to random split without stratification.")
+            X_train, X_test, y_train, y_test = _split_train_test_by_user(
+                data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=None)
 
         # Final check: ensure both train and test have both classes
         if y_train.nunique() < 2:
@@ -479,8 +518,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                     lr_model = Pipeline([
                         ('scaler', StandardScaler()),
                         ('model', LogisticRegression(
-                            C=0.01,
-                            solver='liblinear',
+                            C=1.0,
+                            solver='newton-cholesky',
                             max_iter=10000,
                             random_state=42,
                             class_weight='balanced'
@@ -494,7 +533,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 ('scaler', StandardScaler()),
                 # params selected from previous tuning results on sleep 24hr lookback
                 ('model', LogisticRegression(
-                    C = 0.01, solver = 'liblinear', max_iter=10000, random_state=42, class_weight='balanced'))
+                    C = 1.0, solver = 'newton-cholesky', max_iter=10000, random_state=42, class_weight='balanced'))
             ])
             lr_model.fit(X_train, y_train)
         lr_pred = lr_model.predict(X_test)
