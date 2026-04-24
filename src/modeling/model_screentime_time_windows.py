@@ -15,6 +15,7 @@ Optional flags:
     --propagate, -p   Propagate positive labels to all entries for users with any positive label
     --balanced, -b    Use balanced class weights to handle class imbalance
     --loocv, -l       Use leave-one-user-out cross-validation instead of train/test split
+    --temporal-split, -s  Use temporal per-user split (first 70% train, last 30% test)
 """
 
 from math import sqrt
@@ -91,34 +92,59 @@ class SafeStratifiedKFold(StratifiedKFold):
             yield split
 
 
-def _split_train_test_by_user(data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=None):
+def _split_train_test_by_user(
+    data,
+    X,
+    y,
+    user_col='app_user_id',
+    test_size=0.3,
+    random_state=42,
+    stratify=None,
+    temporal_split=False,
+    timestamp_col=None,
+):
     """
     Split rows within each user so every user contributes to train and test.
-    In the future, could experiment with different ways to split.
+    If temporal_split=True, each user's rows are sorted by timestamp and split chronologically.
     """
     if user_col not in data.columns:
         raise ValueError(f"Missing required user column: {user_col}")
+
+    if temporal_split and timestamp_col is None:
+        raise ValueError("timestamp_col is required when temporal_split=True")
+
+    if temporal_split and timestamp_col not in data.columns:
+        raise ValueError(f"Missing required timestamp column for temporal split: {timestamp_col}")
 
     train_indices = []
     test_indices = []
 
     for _, user_data in data.groupby(user_col, sort=False):
+        if temporal_split:
+            user_data = user_data.sort_values(timestamp_col)
+
         user_indices = user_data.index.to_numpy()
 
         if len(user_indices) < 2:
             train_indices.extend(user_indices.tolist())
             continue
 
-        user_y = y.loc[user_indices]
-        stratify_y = user_y if user_y.nunique() > 1 and user_y.value_counts().min() >= 2 else None
+        if temporal_split:
+            split_point = int(np.floor(len(user_indices) * (1 - test_size)))
+            split_point = min(max(split_point, 1), len(user_indices) - 1)
+            user_train_idx = user_indices[:split_point]
+            user_test_idx = user_indices[split_point:]
+        else:
+            user_y = y.loc[user_indices]
+            stratify_y = user_y if user_y.nunique() > 1 and user_y.value_counts().min() >= 2 else None
 
-        user_train_idx, user_test_idx = train_test_split(
-            user_indices,
-            test_size=test_size,
-            random_state=random_state,
-            shuffle=True,
-            stratify=stratify_y,
-        )
+            user_train_idx, user_test_idx = train_test_split(
+                user_indices,
+                test_size=test_size,
+                random_state=random_state,
+                shuffle=True,
+                stratify=stratify_y,
+            )
 
         train_indices.extend(user_train_idx.tolist())
         test_indices.extend(user_test_idx.tolist())
@@ -153,7 +179,8 @@ def _prepare_model_inputs(data):
     return numeric_df, list(numeric_df.columns)
 
 def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False,
-                              balanced_class_weight=False, use_loocv=False, tune_models=False):
+                              balanced_class_weight=False, use_loocv=False, tune_models=False,
+                              temporal_split=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -165,6 +192,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
     - tune_models: if True, run HalvingRandomSearchCV for parameter tuning
+    - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
 
     Returns:
     - Dictionary with model performance metrics
@@ -434,11 +462,29 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         # Standard train/test split
         try:
             X_train, X_test, y_train, y_test = _split_train_test_by_user(
-                data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=y)
+                data,
+                X,
+                y,
+                user_col='app_user_id',
+                test_size=0.3,
+                random_state=42,
+                stratify=y,
+                temporal_split=temporal_split,
+                timestamp_col=timestamp_col,
+            )
         except ValueError as e:
             print(f"  [{time_window}h] Warning: Stratified split failed due to class imbalance. Falling back to random split without stratification.")
             X_train, X_test, y_train, y_test = _split_train_test_by_user(
-                data, X, y, user_col='app_user_id', test_size=0.3, random_state=42, stratify=None)
+                data,
+                X,
+                y,
+                user_col='app_user_id',
+                test_size=0.3,
+                random_state=42,
+                stratify=None,
+                temporal_split=False,
+                timestamp_col=timestamp_col,
+            )
 
         # Final check: ensure both train and test have both classes
         if y_train.nunique() < 2:
@@ -452,7 +498,8 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'total_samples': len(data),
             'train_samples': len(X_train),
             'test_samples': len(X_test),
-            'target_type': target_type
+            'target_type': target_type,
+            'split_method': 'temporal_70_30' if temporal_split else 'random_70_30'
         }
 
         # Train baseline model using previous survey label
@@ -533,7 +580,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 ('scaler', StandardScaler()),
                 # params selected from previous tuning results on sleep 24hr lookback
                 ('model', LogisticRegression(
-                    C = 1.0, solver = 'newton-cholesky', max_iter=10000, random_state=42, class_weight='balanced'))
+                    C = 100.0, solver = 'liblinear', max_iter=10000, random_state=42, class_weight='balanced'))
             ])
             lr_model.fit(X_train, y_train)
         lr_pred = lr_model.predict(X_test)
@@ -654,13 +701,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 scale_pos_weight = either scale_pos_weight or sqrt(scale_post_weight)
             '''
             xgb_model = xgb.XGBClassifier(
-                n_estimators=800,
-                max_depth=6,
-                learning_rate=0.1,
-                colsample_bytree=0.5,
-                subsample=0.9,
-                reg_alpha=0.1,
-                min_child_weight=1,
+                n_estimators=600,
+                max_depth=5,
+                learning_rate=0.05,
+                colsample_bytree=0.7,
+                subsample=0.7,
+                reg_alpha=0,
+                min_child_weight=3,
                 scale_pos_weight=1,
                 random_state=42
             )
@@ -876,8 +923,8 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
 
 
-def main(target_type='phq9', propagate_labels=False,
-         balanced_class_weight=False, use_loocv=False, tune_models=False):
+def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False, 
+         use_loocv=False, tune_models=False, temporal_split=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
@@ -891,6 +938,7 @@ def main(target_type='phq9', propagate_labels=False,
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
     - tune_models: if True, run HalvingRandomSearchCV for parameter tuning
+    - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
     """
     # Validate target_type
     if target_type not in AVAILABLE_LABELS:
@@ -909,6 +957,8 @@ def main(target_type='phq9', propagate_labels=False,
         print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
     if tune_models:
         print("NOTE: HalvingRandomSearchCV tuning is ENABLED")
+    if temporal_split and not use_loocv:
+        print("NOTE: Temporal split is ENABLED - per user, first 70% train / last 30% test")
     print("="*80)
 
     # Time windows to experiment with (in hours)
@@ -939,7 +989,8 @@ def main(target_type='phq9', propagate_labels=False,
             propagate_labels=propagate_labels,
             balanced_class_weight=balanced_class_weight,
             use_loocv=use_loocv,
-            tune_models=tune_models
+            tune_models=tune_models,
+            temporal_split=temporal_split
         )
         if results:
             all_results.append(results)
@@ -1016,6 +1067,7 @@ if __name__ == '__main__':
     balanced_class_weight = False
     use_loocv = False
     tune_models = False
+    temporal_split = False
 
     # Parse command line arguments
     if len(sys.argv) > 1:
@@ -1045,11 +1097,16 @@ if __name__ == '__main__':
         tune_models = True
         print("HalvingRandomSearchCV tuning enabled")
 
+    if '--temporal-split' in sys.argv or '-s' in sys.argv:
+        temporal_split = True
+        print("Temporal per-user 70/30 split enabled")
+
     # Run main with parsed arguments
     main(
         target_type=target_type,
         propagate_labels=propagate_labels,
         balanced_class_weight=balanced_class_weight,
         use_loocv=use_loocv,
-        tune_models=tune_models
+        tune_models=tune_models,
+        temporal_split=temporal_split
     )
