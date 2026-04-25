@@ -19,35 +19,7 @@ and pull from the csv to combine certain categories (e.g., all game categories i
 photography + video players into 'Media' category).
 '''
 
-# All Google Play Store GAME_* sub-genre IDs that should be collapsed into a single GAMES category
-GAME_SUBCATEGORIES = {
-    'GAME_ACTION', 'GAME_ADVENTURE', 'GAME_ARCADE', 'GAME_BOARD', 'GAME_CARD',
-    'GAME_CASINO', 'GAME_CASUAL', 'GAME_EDUCATIONAL', 'GAME_MUSIC', 'GAME_PUZZLE',
-    'GAME_RACING', 'GAME_ROLE_PLAYING', 'GAME_SIMULATION', 'GAME_SPORTS',
-    'GAME_STRATEGY', 'GAME_TRIVIA', 'GAME_WORD',
-}
-
-
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'app_category_cache.json')
-
-
-def normalize_category(category):
-    """
-    Normalize category names, collapsing all GAME_* subcategories into 'GAMES'.
-
-    Parameters:
-    -----------
-    category : str
-        Raw category string (e.g. from Google Play Store genreId)
-
-    Returns:
-    --------
-    str : Normalized category
-    """
-    if category in GAME_SUBCATEGORIES or category.startswith('GAME_'):
-        return 'GAMES'
-    return category
-
 
 def categorize_system_app(app_name):
     """
@@ -176,7 +148,10 @@ def categorize_apps(screentime_app_df):
         if category is None:
             category = categorize_system_app(app_name)
 
-        category = normalize_category(category)
+        # All Google Play Store GAME_* sub-genre IDs that should be collapsed into a single GAMES category
+        if category.startswith('GAME_'):
+            category = 'GAMES'
+            
         cache[app_name] = category
         category_map[app_name] = category
 
