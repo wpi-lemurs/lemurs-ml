@@ -15,23 +15,22 @@ Optional flags:
     --propagate, -p   Propagate positive labels to all entries for users with any positive label
     --balanced, -b    Use balanced class weights to handle class imbalance
     --loocv, -l       Use leave-one-user-out cross-validation instead of train/test split
+    --tune, -t        Run RandomizedSearchCV hyperparameter tuning
     --temporal-split, -s  Use temporal per-user split (first 70% train, last 30% test)
 """
 
 from math import sqrt
-import warnings
 
 from src.data_processing.merge_passive_data_and_labels import propagate_positive_labels
 from src.config import DATA_DIR
 import pandas as pd
 import numpy as np
-from sklearn.experimental import enable_halving_search_cv  # noqa: F401
-from sklearn.model_selection import train_test_split, LeaveOneGroupOut, HalvingRandomSearchCV, StratifiedKFold
+from sklearn.model_selection import train_test_split, LeaveOneGroupOut, RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix, recall_score
+from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix, recall_score, make_scorer
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
@@ -178,6 +177,33 @@ def _prepare_model_inputs(data):
     numeric_df = numeric_df.fillna(0)
     return numeric_df, list(numeric_df.columns)
 
+
+def _get_feasible_cv_splits(y, preferred_splits=5, minimum_splits=2):
+    """Return the highest feasible stratified CV split count based on class frequencies."""
+    class_counts = pd.Series(y).value_counts()
+
+    if class_counts.shape[0] < 2:
+        return None
+
+    max_feasible_splits = int(class_counts.min())
+    n_splits = min(preferred_splits, max_feasible_splits)
+
+    if n_splits < minimum_splits:
+        return None
+
+    return n_splits
+
+
+def _safe_binary_recall(y_true, y_pred):
+    """Recall scorer that returns 0.0 when a validation slice contains only one class."""
+    y_true = np.asarray(y_true)
+    if np.unique(y_true).size < 2:
+        return 0.0
+    return recall_score(y_true, y_pred, pos_label=1, average='binary', zero_division=0)
+
+
+SAFE_RECALL_SCORER = make_scorer(_safe_binary_recall)
+
 def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False,
                               balanced_class_weight=False, use_loocv=False, tune_models=False,
                               temporal_split=False):
@@ -191,7 +217,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
-    - tune_models: if True, run HalvingRandomSearchCV for parameter tuning
+    - tune_models: if True, run RandomizedSearchCV for parameter tuning
     - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
 
     Returns:
@@ -208,8 +234,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     label_col = AVAILABLE_LABELS[target_type]
     positive_class = POSITIVE_CLASS_MAP[target_type]
-    output_prefix = f'daily_screentime_{target_type}'
-    prediction_task = target_type.replace('_', ' ').title()
 
     # Handle sleep label special case (drop N/A)
     if target_type == 'sleep':
@@ -223,11 +247,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     # Check if we have both classes
     if data[label_col].nunique() < 2:
-        return None
-
-    # Check minimum samples per class
-    class_counts = data[label_col].nunique()
-    if class_counts < 2:
         return None
 
     if len(data) < 10:
@@ -268,18 +287,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         all_lr_preds = []
         all_rf_preds = []
         all_xgb_preds = []
-        all_lr_probs = []
-        all_rf_probs = []
-        all_xgb_probs = []
         all_y_test = []
         all_baseline_true = []
         all_baseline_pred = []
-
-        fold_num = 0
         successful_folds = 0
 
         for train_idx, test_idx in logo.split(X, y, groups):
-            fold_num += 1
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
@@ -337,26 +350,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 all_y_test.extend(y_test)
                 successful_folds += 1
 
-                # Store probabilities if possible
-                try:
-                    lr_prob = lr_model.predict_proba(X_test_scaled)[:, 1]
-                    all_lr_probs.extend(lr_prob)
-                except:
-                    pass
-
-                try:
-                    rf_prob = rf_model.predict_proba(X_test)[:, 1]
-                    all_rf_probs.extend(rf_prob)
-                except:
-                    pass
-
-                try:
-                    xgb_prob = xgb_model.predict_proba(X_test)[:, 1]
-                    all_xgb_probs.extend(xgb_prob)
-                except:
-                    pass
-
-            except Exception as e:
+            except Exception:
                 continue
 
         if successful_folds == 0:
@@ -453,6 +447,10 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'importance': rf_full.feature_importances_
         }).sort_values('importance', ascending=False)
 
+        # print top 10 features
+        print(f"  [{time_window}h] Top features:")
+        print(feature_importance.head(10))
+
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
 
@@ -530,10 +528,20 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['baseline_f1_score'] = None
 
 
-        cv = SafeStratifiedKFold(n_splits=2, shuffle=True, random_state=42)
+        cv_splits = _get_feasible_cv_splits(y_train, preferred_splits=5, minimum_splits=2)
+        can_tune = tune_models and cv_splits is not None
+        cv = None
+        if can_tune:
+            cv = SafeStratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=42)
+            print(f"  [{time_window}h] Using {cv_splits}-fold CV for tuning")
+        elif tune_models:
+            print(
+                f"  [{time_window}h] Skipping tuning: insufficient per-class samples "
+                f"for stratified CV with at least 2 folds"
+            )
 
         # Train Logistic Regression (with scaled data)
-        if tune_models:
+        if can_tune:
             lr_base = Pipeline([
                 ('scaler', StandardScaler()),
                 ('model', LogisticRegression(max_iter=10000, random_state=42))
@@ -544,14 +552,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 'model__class_weight': [None, 'balanced']
             }
 
-            lr_search = HalvingRandomSearchCV(
+            lr_search = RandomizedSearchCV(
                 estimator=lr_base,
                 param_distributions=lr_grid,
-                scoring='recall',
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
                 cv=cv,
                 random_state=42,
                 n_jobs=-1,
-                min_resources=100,
                 error_score=0.0
             )
             try:
@@ -559,7 +567,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 lr_model = lr_search.best_estimator_
                 print(f"  [{time_window}h] LR best params: {lr_search.best_params_}")
             except ValueError as e:
-                # Some halving rounds can contain only one class in sampled data.
+                # Some CV fits can contain only one class in sampled data.
                 if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
                     print(f"  [{time_window}h] Skipping LR tuning due to one-class round/fold: {e}")
                     lr_model = Pipeline([
@@ -579,6 +587,12 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             lr_model = Pipeline([
                 ('scaler', StandardScaler()),
                 # params selected from previous tuning results on sleep 24hr lookback
+                '''
+                Best params from tuning on suicide risk 24hr lookback:
+                C=100.0,
+                solver='liblinear',
+                class_weight='balanced'
+                '''
                 ('model', LogisticRegression(
                     C = 100.0, solver = 'liblinear', max_iter=10000, random_state=42, class_weight='balanced'))
             ])
@@ -602,7 +616,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['lr_f1_score'] = None
 
         # Train Random Forest
-        if tune_models:
+        if can_tune:
             rf_base = RandomForestClassifier(random_state=42)
             rf_grid = {
                 'n_estimators': [100, 300, 500],
@@ -611,22 +625,40 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 'min_samples_leaf': [1, 2, 4],
                 'class_weight': [None, 'balanced']
             }
-            rf_search = HalvingRandomSearchCV(
+            rf_search = RandomizedSearchCV(
                 estimator=rf_base,
                 param_distributions=rf_grid,
-                scoring='recall',
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
                 cv=cv,
                 random_state=42,
                 n_jobs=-1,
                 error_score=np.nan
             )
-            rf_search.fit(X_train, y_train)
-            rf_model = rf_search.best_estimator_
-            print(f"  [{time_window}h] RF best params: {rf_search.best_params_}")
+            try:
+                rf_search.fit(X_train, y_train)
+                rf_model = rf_search.best_estimator_
+                print(f"  [{time_window}h] RF best params: {rf_search.best_params_}")
+            except ValueError as e:
+                if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
+                    print(f"  [{time_window}h] Skipping RF tuning due to one-class round/fold: {e}")
+                    rf_model = RandomForestClassifier(n_estimators=300, max_depth=10, min_samples_split=8,
+                                                      min_samples_leaf=1, random_state=42, class_weight='balanced')
+                    rf_model.fit(X_train, y_train)
+                else:
+                    raise
         else:
-            # params selected from previous tuning results
-            rf_model = RandomForestClassifier(n_estimators=300, max_depth=20, min_samples_split=2, 
-                                              min_samples_leaf=2, random_state=42, class_weight='balanced')
+            # params selected from previous tuning results on sleep 24hr lookback
+            '''
+            Best params from tuning on suicide risk 24hr lookback:
+            'n_estimators': 300,
+            'max_depth': 10,
+            'min_samples_split': 8,
+            'min_samples_leaf': 1,
+            'class_weight': 'balanced'
+            '''
+            rf_model = RandomForestClassifier(n_estimators=300, max_depth=10, min_samples_split=8, 
+                                              min_samples_leaf=1, random_state=42, class_weight='balanced')
             rf_model.fit(X_train, y_train)
         rf_pred = rf_model.predict(X_test)
         rf_balanced_acc = balanced_accuracy_score(y_test, rf_pred)
@@ -652,13 +684,16 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         }).sort_values('importance', ascending=False)
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
+        # print top 10 features
+        print(f"  [{time_window}h] Top features:")
+        print(feature_importance.head(10))
 
         # Train XGBoost model
         # Calculate scale_pos_weight to handle class imbalance
         class_counts = pd.Series(y_train).value_counts()
         scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
                 
-        if tune_models:
+        if can_tune:
             xgb_base = xgb.XGBClassifier(
                 random_state=42
             )
@@ -674,31 +709,50 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 'scale_pos_weight': [1, scale_pos_weight, sqrt(scale_pos_weight)],
 
             }
-            xgb_search = HalvingRandomSearchCV(
+            xgb_search = RandomizedSearchCV(
                 estimator=xgb_base,
                 param_distributions=xgb_grid,
-                scoring='recall',
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
                 cv=cv,
                 random_state=42,
                 n_jobs=-1,
                 error_score=np.nan
             )
-            xgb_search.fit(X_train, y_train)
-            xgb_model = xgb_search.best_estimator_
-            print(f"  [{time_window}h] XGB best params: {xgb_search.best_params_}")
+            try:
+                xgb_search.fit(X_train, y_train)
+                xgb_model = xgb_search.best_estimator_
+                print(f"  [{time_window}h] XGB best params: {xgb_search.best_params_}")
+            except ValueError as e:
+                if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
+                    print(f"  [{time_window}h] Skipping XGB tuning due to one-class round/fold: {e}")
+                    xgb_model = xgb.XGBClassifier(
+                        n_estimators=600,
+                        max_depth=5,
+                        learning_rate=0.05,
+                        colsample_bytree=0.7,
+                        subsample=0.7,
+                        reg_alpha=0,
+                        min_child_weight=3,
+                        scale_pos_weight=1,
+                        random_state=42
+                    )
+                    xgb_model.fit(X_train, y_train)
+                else:
+                    raise
         else:
-            # params selected from previous tuning results
+            # params selected from previous tuning results on sleep 24hr lookback
             '''
             Best params from tuning  on suicide risk 24hr lookback:
                 n_estimators = 600
-                max_depth = 4
-                learning_rate = 0.1
+                max_depth = 6
+                learning_rate = 0.05
                 subsample = 0.9
                 colsample_bytree = 0.5
                 gamma = 0
-                min_child_weight = 1
-                reg_alpha = 0.1
-                scale_pos_weight = either scale_pos_weight or sqrt(scale_post_weight)
+                min_child_weight = 5
+                reg_alpha = 1
+                scale_pos_weight = scale_pos_weight
             '''
             xgb_model = xgb.XGBClassifier(
                 n_estimators=600,
@@ -937,7 +991,7 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
-    - tune_models: if True, run HalvingRandomSearchCV for parameter tuning
+    - tune_models: if True, run RandomizedSearchCV for parameter tuning
     - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
     """
     # Validate target_type
@@ -956,7 +1010,7 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     if propagate_labels:
         print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
     if tune_models:
-        print("NOTE: HalvingRandomSearchCV tuning is ENABLED")
+        print("NOTE: RandomizedSearchCV tuning is ENABLED")
     if temporal_split and not use_loocv:
         print("NOTE: Temporal split is ENABLED - per user, first 70% train / last 30% test")
     print("="*80)
@@ -1095,7 +1149,7 @@ if __name__ == '__main__':
 
     if '--tune' in sys.argv or '-t' in sys.argv:
         tune_models = True
-        print("HalvingRandomSearchCV tuning enabled")
+        print("RandomizedSearchCV tuning enabled")
 
     if '--temporal-split' in sys.argv or '-s' in sys.argv:
         temporal_split = True
