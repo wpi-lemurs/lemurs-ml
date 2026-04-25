@@ -61,6 +61,10 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
     original_len = len(df)
     print(f"\nRecords before deduplication: {original_len:,}")
 
+    # TODO: SCREENTIME DATA COLLECTION HAS SINCE BEEN FIXED TO AVOID CUMULATIVE RECORDS
+    # All data after 4/1/2026 should be clean from our initial fix, but a WIP fix as of 4/14/2026
+    # may improve this.
+
     # DEDUPLICATION: Keep only the most recent record for each app per screentime_id
     # Since total_time_ms is cumulative, we want the latest record which has the final count
     df['last_time_used'] = pd.to_datetime(df['last_time_used'])
@@ -73,7 +77,6 @@ def load_and_clean_screentime_data() -> pd.DataFrame:
 
     # FILTER OUT LAUNCHER AND CONTROLLER APPS
     # Launcher apps (home screens) and controller apps don't represent meaningful user activity for ML
-    before_filter = len(df)
     filter_mask = df['app_name'].str.contains('launcher|controller', case=False, na=False, regex=True)
     num_filtered_records = filter_mask.sum()
     filtered_apps = df[filter_mask]['app_name'].unique()
@@ -265,7 +268,7 @@ def generate_features_for_all_timepoints(df: pd.DataFrame) -> pd.DataFrame:
 
     # Get all unique submission events (one per screentime_id)
     submission_events = df[['screentime_id', 'app_user_id', 'start_time']].drop_duplicates()
-    submission_events = submission_events.sort_values(['app_user_id', 'start_time'])
+    submission_events = submission_events.sort_values(['app_user_id', 'start_time']).reset_index(drop=True)
 
     print(f"Processing {len(submission_events):,} submission events for {submission_events['app_user_id'].nunique()} users...")
 
@@ -336,7 +339,7 @@ def generate_subwindow_features_for_all_timepoints(df: pd.DataFrame,
 
     # Get all unique submission events (one per screentime_id)
     submission_events = df[['screentime_id', 'app_user_id', 'start_time']].drop_duplicates()
-    submission_events = submission_events.sort_values(['app_user_id', 'start_time'])
+    submission_events = submission_events.sort_values(['app_user_id', 'start_time']).reset_index(drop=True)
 
     print(f"Processing {len(submission_events):,} submission events for {submission_events['app_user_id'].nunique()} users...")
 

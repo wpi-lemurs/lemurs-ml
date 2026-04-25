@@ -4,6 +4,7 @@ Experiments with different time windows (n hours before survey) to find optimal 
 Supports all daily labels:
 - phq9 (depression), suicide_risk, self_harm, positive_emotion, negative_emotion
 - social_stress, social_connection, minority_stress, emotion_regulation, sleep
+If adding a new category, be sure to drop its risk label from the training data in FeatureSelector
 
 Usage:
     python model_screentime_time_windows.py phq9               # Depression prediction
@@ -14,25 +15,29 @@ Optional flags:
     --propagate, -p   Propagate positive labels to all entries for users with any positive label
     --balanced, -b    Use balanced class weights to handle class imbalance
     --loocv, -l       Use leave-one-user-out cross-validation instead of train/test split
+    --tune, -t        Run RandomizedSearchCV hyperparameter tuning
+    --temporal-split, -s  Use temporal per-user split (first 70% train, last 30% test)
 """
 
-from src.data_processing.merge_passive_data_and_labels import (
-    merge_daily_screentime_features_with_phq9,
-    merge_daily_screentime_features_with_risk_labels,
-    propagate_positive_labels
-)
+from math import sqrt
+
+from src.data_processing.merge_passive_data_and_labels import propagate_positive_labels
 from src.config import DATA_DIR
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, LeaveOneGroupOut
+from sklearn.model_selection import train_test_split, LeaveOneGroupOut, RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, balanced_accuracy_score, confusion_matrix, recall_score, make_scorer
 import matplotlib
 matplotlib.use('Agg')  # Set backend for non-interactive plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
+import xgboost as xgb
+from src.pipeline.mental_health_pipeline import create_subwindow_pipeline
+from src.pipeline.transformers import FeatureSelector
 
 # Use centralized data directory
 data_dir = DATA_DIR
@@ -48,7 +53,7 @@ AVAILABLE_LABELS = {
     'minority_stress': 'minority_stress_label',
     'emotion_regulation': 'emotion_regulation_label',
     'sleep': 'sleep_label',
-    'phq9': 'severity_label'  # PHQ-9 depression
+    'phq9': 'severity_label'
 }
 
 POSITIVE_CLASS_MAP = {
@@ -64,7 +69,144 @@ POSITIVE_CLASS_MAP = {
     'sleep': 'at_risk'
 }
 
-def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
+
+class SafeStratifiedKFold(StratifiedKFold):
+    """StratifiedKFold that skips folds lacking both classes in train/test splits."""
+
+    def split(self, X, y, groups=None):
+        valid_splits = []
+        for train_idx, test_idx in super().split(X, y, groups):
+            y_train_fold = np.asarray(y)[train_idx]
+            y_test_fold = np.asarray(y)[test_idx]
+            if np.unique(y_train_fold).size < 2:
+                continue
+            if np.unique(y_test_fold).size < 2:
+                continue
+            valid_splits.append((train_idx, test_idx))
+
+        if not valid_splits:
+            raise ValueError("No valid CV folds with at least 2 classes in both train and test.")
+
+        for split in valid_splits:
+            yield split
+
+
+def _split_train_test_by_user(
+    data,
+    X,
+    y,
+    user_col='app_user_id',
+    test_size=0.3,
+    random_state=42,
+    stratify=None,
+    temporal_split=False,
+    timestamp_col=None,
+):
+    """
+    Split rows within each user so every user contributes to train and test.
+    If temporal_split=True, each user's rows are sorted by timestamp and split chronologically.
+    """
+    if user_col not in data.columns:
+        raise ValueError(f"Missing required user column: {user_col}")
+
+    if temporal_split and timestamp_col is None:
+        raise ValueError("timestamp_col is required when temporal_split=True")
+
+    if temporal_split and timestamp_col not in data.columns:
+        raise ValueError(f"Missing required timestamp column for temporal split: {timestamp_col}")
+
+    train_indices = []
+    test_indices = []
+
+    for _, user_data in data.groupby(user_col, sort=False):
+        if temporal_split:
+            user_data = user_data.sort_values(timestamp_col)
+
+        user_indices = user_data.index.to_numpy()
+
+        if len(user_indices) < 2:
+            train_indices.extend(user_indices.tolist())
+            continue
+
+        if temporal_split:
+            split_point = int(np.floor(len(user_indices) * (1 - test_size)))
+            split_point = min(max(split_point, 1), len(user_indices) - 1)
+            user_train_idx = user_indices[:split_point]
+            user_test_idx = user_indices[split_point:]
+        else:
+            user_y = y.loc[user_indices]
+            stratify_y = user_y if user_y.nunique() > 1 and user_y.value_counts().min() >= 2 else None
+
+            user_train_idx, user_test_idx = train_test_split(
+                user_indices,
+                test_size=test_size,
+                random_state=random_state,
+                shuffle=True,
+                stratify=stratify_y,
+            )
+
+        train_indices.extend(user_train_idx.tolist())
+        test_indices.extend(user_test_idx.tolist())
+
+    X_train = X.loc[train_indices]
+    X_test = X.loc[test_indices]
+    y_train = y.loc[train_indices]
+    y_test = y.loc[test_indices]
+
+    return X_train, X_test, y_train, y_test
+
+def _prepare_model_inputs(data):
+    """Prepare model features using the same preprocessing style as the PyTorch LSTM script."""
+    feature_df = data.copy()
+
+    selector = FeatureSelector()
+    selector.fit(feature_df)
+    feature_df = selector.transform(feature_df)
+
+    datetime_cols = feature_df.select_dtypes(include=['datetime64[ns]']).columns
+    cat_cols = feature_df.select_dtypes(include=['str', 'object', 'category', 'bool']).columns
+
+    feature_df = feature_df.drop(columns=list(datetime_cols), errors='ignore')
+
+    if len(cat_cols) > 0:
+        feature_df[cat_cols] = feature_df[cat_cols].fillna('missing')
+        feature_df = pd.get_dummies(feature_df, columns=list(cat_cols), dtype=float)
+
+    numeric_df = feature_df.select_dtypes(include=[np.number]).copy()
+
+    numeric_df = numeric_df.fillna(0)
+    return numeric_df, list(numeric_df.columns)
+
+
+def _get_feasible_cv_splits(y, preferred_splits=5, minimum_splits=2):
+    """Return the highest feasible stratified CV split count based on class frequencies."""
+    class_counts = pd.Series(y).value_counts()
+
+    if class_counts.shape[0] < 2:
+        return None
+
+    max_feasible_splits = int(class_counts.min())
+    n_splits = min(preferred_splits, max_feasible_splits)
+
+    if n_splits < minimum_splits:
+        return None
+
+    return n_splits
+
+
+def _safe_binary_recall(y_true, y_pred):
+    """Recall scorer that returns 0.0 when a validation slice contains only one class."""
+    y_true = np.asarray(y_true)
+    if np.unique(y_true).size < 2:
+        return 0.0
+    return recall_score(y_true, y_pred, pos_label=1, average='binary', zero_division=0)
+
+
+SAFE_RECALL_SCORER = make_scorer(_safe_binary_recall)
+
+def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_labels=False,
+                              balanced_class_weight=False, use_loocv=False, tune_models=False,
+                              temporal_split=False):
     """
     Train and evaluate models for a specific time window.
 
@@ -75,10 +217,13 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
+    - tune_models: if True, run RandomizedSearchCV for parameter tuning
+    - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
 
     Returns:
     - Dictionary with model performance metrics
     """
+    print(f" Total users: {data['app_user_id'].nunique()}")
     if data.empty:
         print(f"  No data found for {time_window} hour window")
         return None
@@ -89,8 +234,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
     label_col = AVAILABLE_LABELS[target_type]
     positive_class = POSITIVE_CLASS_MAP[target_type]
-    output_prefix = f'daily_screentime_{target_type}'
-    prediction_task = target_type.replace('_', ' ').title()
 
     # Handle sleep label special case (drop N/A)
     if target_type == 'sleep':
@@ -106,18 +249,24 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     if data[label_col].nunique() < 2:
         return None
 
-    # Check minimum samples per class
-    class_counts = data[label_col].nunique()
-    if class_counts < 2:
-        return None
-
     if len(data) < 10:
         return None
 
     # Prepare features and labels
-    hour_cols = [f'hour_{i}' for i in range(time_window)]
-    X = data[hour_cols]
+    X, feature_names = _prepare_model_inputs(data)
+    print(f"  Using preprocessed feature matrix with {len(feature_names)} columns")
+
+    timestamp_col = None
+    if 'survey_timestamp' in data.columns:
+        timestamp_col = 'survey_timestamp'
+    elif 'timestamp' in data.columns:
+        timestamp_col = 'timestamp'
+
     y = data[label_col]
+    assert X.index.equals(y.index) # make sure we didn't accidentally reorder the data in processing
+
+    # convert labels to binary (0 and 1)
+    y = (y == positive_class).astype(int)
 
     # Determine label order based on target type (for confusion matrix)
     if target_type == 'phq9':
@@ -137,28 +286,30 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         # Store predictions and true labels across all folds
         all_lr_preds = []
         all_rf_preds = []
-        all_lr_probs = []
-        all_rf_probs = []
+        all_xgb_preds = []
         all_y_test = []
-
-        fold_num = 0
+        all_baseline_true = []
+        all_baseline_pred = []
         successful_folds = 0
 
         for train_idx, test_idx in logo.split(X, y, groups):
-            fold_num += 1
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-            test_user = groups.iloc[test_idx].iloc[0]
+            # Train baseline model using previous survey label
+            baseline_df = data.iloc[test_idx][[timestamp_col, label_col]].copy()
+            baseline_df = baseline_df.sort_values(timestamp_col)
+            # make all labels the user's first label
+            baseline_df['baseline_pred'] = baseline_df[label_col].iloc[0]
+            # remove first survey (no data before it to use)
+            baseline_df = baseline_df.dropna(subset=['baseline_pred'])
+            
+            all_baseline_true.extend(baseline_df[label_col].tolist())
+            all_baseline_pred.extend(baseline_df['baseline_pred'].tolist())
 
             # Skip fold if training or test set has only one class
             if y_train.nunique() < 2:
                 continue
-
-            if y_test.nunique() < 1:
-                continue
-
-            successful_folds += 1
 
             # Scale features for Logistic Regression
             scaler = StandardScaler()
@@ -177,44 +328,74 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
 
+                # XGBoost (without scaling)
+                # Calculate scale_pos_weight to handle class imbalance
+                class_counts = pd.Series(y_train).value_counts()
+                scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
+                
+                xgb_model = xgb.XGBClassifier(
+                    n_estimators=600,
+                    max_depth=5,
+                    learning_rate=0.05,
+                    scale_pos_weight=scale_pos_weight,
+                    random_state=42
+                )
+                xgb_model.fit(X_train, y_train)
+                xgb_pred = xgb_model.predict(X_test)
+
                 # Store predictions and true labels
                 all_lr_preds.extend(lr_pred)
                 all_rf_preds.extend(rf_pred)
+                all_xgb_preds.extend(xgb_pred)
                 all_y_test.extend(y_test)
+                successful_folds += 1
 
-                # Store probabilities if possible
-                try:
-                    lr_prob = lr_model.predict_proba(X_test_scaled)[:, 1]
-                    all_lr_probs.extend(lr_prob)
-                except:
-                    pass
-
-                try:
-                    rf_prob = rf_model.predict_proba(X_test)[:, 1]
-                    all_rf_probs.extend(rf_prob)
-                except:
-                    pass
-
-            except Exception as e:
+            except Exception:
                 continue
 
         if successful_folds == 0:
             return None
 
+        if len(all_y_test) == 0 or len(all_lr_preds) == 0 or len(all_rf_preds) == 0 or len(all_xgb_preds) == 0:
+            return None
+
+        # Convert labels back to original class names for evaluation
+        all_y_test = np.where(np.array(all_y_test) == 1, positive_class, f'not_{positive_class}')
+        all_lr_preds = np.where(np.array(all_lr_preds) == 1, positive_class, f'not_{positive_class}')
+        all_rf_preds = np.where(np.array(all_rf_preds) == 1, positive_class, f'not_{positive_class}')
+        all_xgb_preds = np.where(np.array(all_xgb_preds) == 1, positive_class, f'not_{positive_class}')
 
         # Convert to numpy arrays for evaluation
         all_y_test = np.array(all_y_test)
         all_lr_preds = np.array(all_lr_preds)
         all_rf_preds = np.array(all_rf_preds)
+        all_xgb_preds = np.array(all_xgb_preds)
 
         # Calculate metrics across all folds
-        lr_acc = accuracy_score(all_y_test, all_lr_preds)
-        rf_acc = accuracy_score(all_y_test, all_rf_preds)
+        lr_balanced_acc = balanced_accuracy_score(all_y_test, all_lr_preds)
+        rf_balanced_acc = balanced_accuracy_score(all_y_test, all_rf_preds)
+        xgb_balanced_acc = balanced_accuracy_score(all_y_test, all_xgb_preds)
+
+        lr_avg_recall = recall_score(all_y_test, all_lr_preds, pos_label=positive_class, average='binary', zero_division=0)
+        rf_avg_recall = recall_score(all_y_test, all_rf_preds, pos_label=positive_class, average='binary', zero_division=0)
+        xgb_avg_recall = recall_score(all_y_test, all_xgb_preds, pos_label=positive_class, average='binary', zero_division=0)
 
         # Generate confusion matrices
         lr_cm = confusion_matrix(all_y_test, all_lr_preds, labels=label_order)
         rf_cm = confusion_matrix(all_y_test, all_rf_preds, labels=label_order)
+        xgb_cm = confusion_matrix(all_y_test, all_xgb_preds, labels=label_order)
 
+        baseline_cm = None
+        baseline_balanced_acc = None
+        baseline_f1 = None
+        if len(all_baseline_true) > 0:
+            baseline_balanced_acc = balanced_accuracy_score(all_baseline_true, all_baseline_pred)
+            baseline_avg_recall = recall_score(all_baseline_true, all_baseline_pred, pos_label=positive_class, average='binary', zero_division=0)
+            baseline_cm = confusion_matrix(all_baseline_true, all_baseline_pred, labels=label_order)
+            try:
+                baseline_f1 = f1_score(all_baseline_true, all_baseline_pred, pos_label=positive_class, average='binary')
+            except:
+                baseline_f1 = None
 
         # Store results
         results = {
@@ -225,11 +406,22 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'target_type': target_type,
             'cv_method': 'LOOCV',
             'successful_folds': successful_folds,
-            'lr_accuracy': lr_acc,
-            'rf_accuracy': rf_acc,
+            'lr_balanced_accuracy': lr_balanced_acc,
+            'rf_balanced_accuracy': rf_balanced_acc,
+            'xgb_balanced_accuracy': xgb_balanced_acc,
+            'lr_avg_recall': lr_avg_recall,
+            'rf_avg_recall': rf_avg_recall,
+            'xgb_avg_recall': xgb_avg_recall,
             'lr_confusion_matrix': lr_cm.tolist(),
-            'rf_confusion_matrix': rf_cm.tolist()
+            'rf_confusion_matrix': rf_cm.tolist(),
+            'xgb_confusion_matrix': xgb_cm.tolist()
         }
+
+        if baseline_cm is not None:
+            results['baseline_confusion_matrix'] = baseline_cm.tolist()
+            results['baseline_balanced_accuracy'] = baseline_balanced_acc
+            results['baseline_f1_score'] = baseline_f1
+            results['baseline_avg_recall'] = baseline_avg_recall
 
         # Calculate F1 score
         try:
@@ -242,13 +434,22 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
         except:
             results['rf_f1_score'] = None
 
+        try:
+            results['xgb_f1_score'] = f1_score(all_y_test, all_xgb_preds, pos_label=positive_class, average='binary')
+        except:
+            results['xgb_f1_score'] = None
+
         # Feature importance (train on full dataset)
         rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
         rf_full.fit(X, y)
         feature_importance = pd.DataFrame({
-            'hour': hour_cols,
+            'feature': feature_names,
             'importance': rf_full.feature_importances_
         }).sort_values('importance', ascending=False)
+
+        # print top 10 features
+        print(f"  [{time_window}h] Top features:")
+        print(feature_importance.head(10))
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
 
@@ -258,12 +459,29 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
     else:
         # Standard train/test split
         try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.3, random_state=42, stratify=y
+            X_train, X_test, y_train, y_test = _split_train_test_by_user(
+                data,
+                X,
+                y,
+                user_col='app_user_id',
+                test_size=0.3,
+                random_state=42,
+                stratify=y,
+                temporal_split=temporal_split,
+                timestamp_col=timestamp_col,
             )
         except ValueError as e:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.3, random_state=42, stratify=None
+            print(f"  [{time_window}h] Warning: Stratified split failed due to class imbalance. Falling back to random split without stratification.")
+            X_train, X_test, y_train, y_test = _split_train_test_by_user(
+                data,
+                X,
+                y,
+                user_col='app_user_id',
+                test_size=0.3,
+                random_state=42,
+                stratify=None,
+                temporal_split=False,
+                timestamp_col=timestamp_col,
             )
 
         # Final check: ensure both train and test have both classes
@@ -278,15 +496,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             'total_samples': len(data),
             'train_samples': len(X_train),
             'test_samples': len(X_test),
-            'target_type': target_type
+            'target_type': target_type,
+            'split_method': 'temporal_70_30' if temporal_split else 'random_70_30'
         }
 
         # Train baseline model using previous survey label
-
-        baseline_df = data.sort_values(['app_user_id', 'survey_timestamp'])
-
-        # get label for each user's previous survey
-        baseline_df['baseline_pred'] = baseline_df.groupby('app_user_id')[label_col].shift(1)
+        baseline_df = data.sort_values(['app_user_id', timestamp_col])
+        # make all labels the user's first label
+        baseline_df['baseline_pred'] = baseline_df.groupby('app_user_id')[label_col].transform('first')
         # remove first survey (no data before it to use)
         baseline_df = baseline_df.dropna(subset=['baseline_pred'])
 
@@ -296,63 +513,276 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
         baseline_true = baseline_df[label_col].values
         baseline_pred = baseline_df['baseline_pred'].values
-        baseline_acc = accuracy_score(baseline_true, baseline_pred)
+        baseline_balanced_acc = balanced_accuracy_score(baseline_true, baseline_pred)
 
         # Generate confusion matrix with explicit label order
         baseline_cm = confusion_matrix(baseline_true, baseline_pred, labels=label_order)
         results['baseline_confusion_matrix'] = baseline_cm.tolist()
-        results['baseline_accuracy'] = baseline_acc
+        results['baseline_balanced_accuracy'] = baseline_balanced_acc
+        baseline_avg_recall = recall_score(baseline_true, baseline_pred, pos_label=positive_class, average='binary', zero_division=0)
+        results['baseline_avg_recall'] = baseline_avg_recall
 
         try:
             results['baseline_f1_score'] = f1_score(baseline_true, baseline_pred, pos_label=positive_class, average='binary')
         except Exception:
             results['baseline_f1_score'] = None
 
-        # Scale features for Logistic Regression
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+
+        cv_splits = _get_feasible_cv_splits(y_train, preferred_splits=5, minimum_splits=2)
+        can_tune = tune_models and cv_splits is not None
+        cv = None
+        if can_tune:
+            cv = SafeStratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=42)
+            print(f"  [{time_window}h] Using {cv_splits}-fold CV for tuning")
+        elif tune_models:
+            print(
+                f"  [{time_window}h] Skipping tuning: insufficient per-class samples "
+                f"for stratified CV with at least 2 folds"
+            )
 
         # Train Logistic Regression (with scaled data)
-        lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
-        lr_model.fit(X_train_scaled, y_train)
-        lr_pred = lr_model.predict(X_test_scaled)
-        lr_acc = accuracy_score(y_test, lr_pred)
+        if can_tune:
+            lr_base = Pipeline([
+                ('scaler', StandardScaler()),
+                ('model', LogisticRegression(max_iter=10000, random_state=42))
+            ])
+            lr_grid = {
+                'model__C': [0.01, 0.1, 1.0, 10.0, 100.0],
+                'model__solver': ['liblinear', 'lbfgs', 'newton-cholesky'],
+                'model__class_weight': [None, 'balanced']
+            }
+
+            lr_search = RandomizedSearchCV(
+                estimator=lr_base,
+                param_distributions=lr_grid,
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
+                cv=cv,
+                random_state=42,
+                n_jobs=-1,
+                error_score=0.0
+            )
+            try:
+                lr_search.fit(X_train, y_train)
+                lr_model = lr_search.best_estimator_
+                print(f"  [{time_window}h] LR best params: {lr_search.best_params_}")
+            except ValueError as e:
+                # Some CV fits can contain only one class in sampled data.
+                if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
+                    print(f"  [{time_window}h] Skipping LR tuning due to one-class round/fold: {e}")
+                    lr_model = Pipeline([
+                        ('scaler', StandardScaler()),
+                        ('model', LogisticRegression(
+                            C=1.0,
+                            solver='newton-cholesky',
+                            max_iter=10000,
+                            random_state=42,
+                            class_weight='balanced'
+                        ))
+                    ])
+                    lr_model.fit(X_train, y_train)
+                else:
+                    raise
+        else:
+            lr_model = Pipeline([
+                ('scaler', StandardScaler()),
+                # params selected from previous tuning results on sleep 24hr lookback
+                '''
+                Best params from tuning on suicide risk 24hr lookback:
+                C=100.0,
+                solver='liblinear',
+                class_weight='balanced'
+                '''
+                ('model', LogisticRegression(
+                    C = 100.0, solver = 'liblinear', max_iter=10000, random_state=42, class_weight='balanced'))
+            ])
+            lr_model.fit(X_train, y_train)
+        lr_pred = lr_model.predict(X_test)
+        lr_balanced_acc = balanced_accuracy_score(y_test, lr_pred)
 
         # Generate confusion matrix with explicit label order
-        lr_cm = confusion_matrix(y_test, lr_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        lr_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        lr_pred = np.where(lr_pred == 1, positive_class, f'not_{positive_class}')
+        lr_cm = confusion_matrix(lr_y_test, lr_pred, labels=label_order)
         results['lr_confusion_matrix'] = lr_cm.tolist()
 
-        results['lr_accuracy'] = lr_acc
+        results['lr_balanced_accuracy'] = lr_balanced_acc
+        lr_avg_recall = recall_score(lr_y_test, lr_pred, pos_label=positive_class, average='binary', zero_division=0)
+        results['lr_avg_recall'] = lr_avg_recall
         try:
-            results['lr_f1_score'] = f1_score(y_test, lr_pred, pos_label=positive_class, average='binary')
+            results['lr_f1_score'] = f1_score(lr_y_test, lr_pred, pos_label=positive_class, average='binary')
         except:
             results['lr_f1_score'] = None
 
         # Train Random Forest
-        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
-        rf_model.fit(X_train, y_train)
+        if can_tune:
+            rf_base = RandomForestClassifier(random_state=42)
+            rf_grid = {
+                'n_estimators': [100, 300, 500],
+                'max_depth': [None, 5, 10, 20, 30],
+                'min_samples_split': [2, 5, 8],
+                'min_samples_leaf': [1, 2, 4],
+                'class_weight': [None, 'balanced']
+            }
+            rf_search = RandomizedSearchCV(
+                estimator=rf_base,
+                param_distributions=rf_grid,
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
+                cv=cv,
+                random_state=42,
+                n_jobs=-1,
+                error_score=np.nan
+            )
+            try:
+                rf_search.fit(X_train, y_train)
+                rf_model = rf_search.best_estimator_
+                print(f"  [{time_window}h] RF best params: {rf_search.best_params_}")
+            except ValueError as e:
+                if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
+                    print(f"  [{time_window}h] Skipping RF tuning due to one-class round/fold: {e}")
+                    rf_model = RandomForestClassifier(n_estimators=300, max_depth=10, min_samples_split=8,
+                                                      min_samples_leaf=1, random_state=42, class_weight='balanced')
+                    rf_model.fit(X_train, y_train)
+                else:
+                    raise
+        else:
+            # params selected from previous tuning results on sleep 24hr lookback
+            '''
+            Best params from tuning on suicide risk 24hr lookback:
+            'n_estimators': 300,
+            'max_depth': 10,
+            'min_samples_split': 8,
+            'min_samples_leaf': 1,
+            'class_weight': 'balanced'
+            '''
+            rf_model = RandomForestClassifier(n_estimators=300, max_depth=10, min_samples_split=8, 
+                                              min_samples_leaf=1, random_state=42, class_weight='balanced')
+            rf_model.fit(X_train, y_train)
         rf_pred = rf_model.predict(X_test)
-        rf_acc = accuracy_score(y_test, rf_pred)
-
+        rf_balanced_acc = balanced_accuracy_score(y_test, rf_pred)
         # Generate confusion matrix with explicit label order (same as LR above)
-        rf_cm = confusion_matrix(y_test, rf_pred, labels=label_order)
+        # convert labels back to original class names for confusion matrix
+        rf_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        rf_pred = np.where(rf_pred == 1, positive_class, f'not_{positive_class}')
+        rf_cm = confusion_matrix(rf_y_test, rf_pred, labels=label_order)
         results['rf_confusion_matrix'] = rf_cm.tolist()
 
-        results['rf_accuracy'] = rf_acc
+        results['rf_balanced_accuracy'] = rf_balanced_acc
+        rf_avg_recall = recall_score(rf_y_test, rf_pred, pos_label=positive_class, average='binary', zero_division=0)
+        results['rf_avg_recall'] = rf_avg_recall
         try:
-            results['rf_f1_score'] = f1_score(y_test, rf_pred, pos_label=positive_class, average='binary')
+            results['rf_f1_score'] = f1_score(rf_y_test, rf_pred, pos_label=positive_class, average='binary')
         except:
             results['rf_f1_score'] = None
 
         # Feature importance for Random Forest
         feature_importance = pd.DataFrame({
-            'hour': hour_cols,
+            'feature': feature_names,
             'importance': rf_model.feature_importances_
         }).sort_values('importance', ascending=False)
 
         results['top_features'] = feature_importance.head(5).to_dict('records')
+        # print top 10 features
+        print(f"  [{time_window}h] Top features:")
+        print(feature_importance.head(10))
 
+        # Train XGBoost model
+        # Calculate scale_pos_weight to handle class imbalance
+        class_counts = pd.Series(y_train).value_counts()
+        scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
+                
+        if can_tune:
+            xgb_base = xgb.XGBClassifier(
+                random_state=42
+            )
+            xgb_grid = {
+                'n_estimators': [400, 600, 800],
+                'max_depth': [4, 5, 6],
+                'learning_rate': [0.05, 0.1],
+                'subsample': [0.5, 0.7, 0.9],
+                'colsample_bytree': [0.5, 0.7, 0.9],
+                'gamma': [0, 1, 5],
+                'min_child_weight': [1, 3, 5, 10],
+                'reg_alpha': [0, 0.1, 1],
+                'scale_pos_weight': [1, scale_pos_weight, sqrt(scale_pos_weight)],
+
+            }
+            xgb_search = RandomizedSearchCV(
+                estimator=xgb_base,
+                param_distributions=xgb_grid,
+                n_iter=20,
+                scoring=SAFE_RECALL_SCORER,
+                cv=cv,
+                random_state=42,
+                n_jobs=-1,
+                error_score=np.nan
+            )
+            try:
+                xgb_search.fit(X_train, y_train)
+                xgb_model = xgb_search.best_estimator_
+                print(f"  [{time_window}h] XGB best params: {xgb_search.best_params_}")
+            except ValueError as e:
+                if 'at least 2 classes' in str(e) or 'No valid CV folds' in str(e) or 'All the' in str(e):
+                    print(f"  [{time_window}h] Skipping XGB tuning due to one-class round/fold: {e}")
+                    xgb_model = xgb.XGBClassifier(
+                        n_estimators=600,
+                        max_depth=5,
+                        learning_rate=0.05,
+                        colsample_bytree=0.7,
+                        subsample=0.7,
+                        reg_alpha=0,
+                        min_child_weight=3,
+                        scale_pos_weight=1,
+                        random_state=42
+                    )
+                    xgb_model.fit(X_train, y_train)
+                else:
+                    raise
+        else:
+            # params selected from previous tuning results on sleep 24hr lookback
+            '''
+            Best params from tuning  on suicide risk 24hr lookback:
+                n_estimators = 600
+                max_depth = 6
+                learning_rate = 0.05
+                subsample = 0.9
+                colsample_bytree = 0.5
+                gamma = 0
+                min_child_weight = 5
+                reg_alpha = 1
+                scale_pos_weight = scale_pos_weight
+            '''
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=600,
+                max_depth=5,
+                learning_rate=0.05,
+                colsample_bytree=0.7,
+                subsample=0.7,
+                reg_alpha=0,
+                min_child_weight=3,
+                scale_pos_weight=1,
+                random_state=42
+            )
+            xgb_model.fit(X_train, y_train)
+        xgb_pred = xgb_model.predict(X_test)
+        xgb_balanced_acc = balanced_accuracy_score(y_test, xgb_pred)
+        # Generate confusion matrix with explicit label order
+        # convert labels back to original class names for confusion matrix
+        xgb_y_test = np.where(y_test == 1, positive_class, f'not_{positive_class}')
+        xgb_pred = np.where(xgb_pred == 1, positive_class, f'not_{positive_class}')
+        xgb_cm = confusion_matrix(xgb_y_test, xgb_pred, labels=label_order)
+        results['xgb_confusion_matrix'] = xgb_cm.tolist()
+
+        results['xgb_balanced_accuracy'] = xgb_balanced_acc
+        xgb_avg_recall = recall_score(xgb_y_test, xgb_pred, pos_label=positive_class, average='binary', zero_division=0)
+
+        results['xgb_avg_recall'] = xgb_avg_recall
+        try:
+            results['xgb_f1_score'] = f1_score(xgb_y_test, xgb_pred, pos_label=positive_class, average='binary')
+        except:
+            results['xgb_f1_score'] = None
 
         return results
 
@@ -382,7 +812,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Create figure with subplots for each time window
     n_windows = len(all_results)
-    fig, axes = plt.subplots(n_windows, 3, figsize=(14, 5 * n_windows))
+    fig, axes = plt.subplots(n_windows, 4, figsize=(22, 5 * n_windows))
 
     # Handle case of single time window
     if n_windows == 1:
@@ -403,9 +833,10 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 0], cbar=True)
             # Build title with F1 score if available
-            title = f'Logistic Regression - {time_window}h window\nAccuracy: {result["lr_accuracy"]:.3f}'
+            title = f'Logistic Regression - {time_window}h window\nBalanced Accuracy: {result["lr_balanced_accuracy"]:.3f}'
             if 'lr_f1_score' in result and result['lr_f1_score'] is not None:
                 title += f' | F1: {result["lr_f1_score"]:.3f}'
+            title += f' | Average Recall: {result["lr_avg_recall"]:.3f}'
             axes[idx, 0].set_title(title)
             axes[idx, 0].set_ylabel('True Label')
             axes[idx, 0].set_xlabel('Predicted Label')
@@ -417,26 +848,43 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
                        xticklabels=labels, yticklabels=labels,
                        ax=axes[idx, 1], cbar=True)
             # Build title with F1 score if available
-            title = f'Random Forest - {time_window}h window\nAccuracy: {result["rf_accuracy"]:.3f}'
+            title = f'Random Forest - {time_window}h window\nBalanced Accuracy: {result["rf_balanced_accuracy"]:.3f}'
             if 'rf_f1_score' in result and result['rf_f1_score'] is not None:
                 title += f' | F1: {result["rf_f1_score"]:.3f}'
+            title += f' | Average Recall: {result["rf_avg_recall"]:.3f}'
             axes[idx, 1].set_title(title)
             axes[idx, 1].set_ylabel('True Label')
             axes[idx, 1].set_xlabel('Predicted Label')
+
+        # Plot XGBoost confusion matrix
+        if 'xgb_confusion_matrix' in result:
+            xgb_cm = np.array(result['xgb_confusion_matrix'])
+            sns.heatmap(xgb_cm, annot=True, fmt='d', cmap='Purples',
+                       xticklabels=labels, yticklabels=labels,
+                       ax=axes[idx, 2], cbar=True)
+            # Build title with F1 score if available
+            title = f'XGBoost - {time_window}h window\nBalanced Accuracy: {result["xgb_balanced_accuracy"]:.3f}'
+            if 'xgb_f1_score' in result and result['xgb_f1_score'] is not None:
+                title += f' | F1: {result["xgb_f1_score"]:.3f}'
+            title += f' | Average Recall: {result["xgb_avg_recall"]:.3f}'
+            axes[idx, 2].set_title(title)
+            axes[idx, 2].set_ylabel('True Label')
+            axes[idx, 2].set_xlabel('Predicted Label')
         
         # Plot Baseline confusion matrix
         if 'baseline_confusion_matrix' in result:
             baseline_cm = np.array(result['baseline_confusion_matrix'])
             sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
                        xticklabels=labels, yticklabels=labels,
-                       ax=axes[idx, 2], cbar=True)
+                       ax=axes[idx, 3], cbar=True)
             # Build title with F1 score if available
-            title = f'Baseline - {time_window}h window\nAccuracy: {result["baseline_accuracy"]:.3f}'
+            title = f'Baseline - {time_window}h window\nBalanced Accuracy: {result["baseline_balanced_accuracy"]:.3f}'
             if 'baseline_f1_score' in result and result['baseline_f1_score'] is not None:
                 title += f' | F1: {result["baseline_f1_score"]:.3f}'
-            axes[idx, 2].set_title(title)
-            axes[idx, 2].set_ylabel('True Label')
-            axes[idx, 2].set_xlabel('Predicted Label')
+            title += f' | Average Recall: {result["baseline_avg_recall"]:.3f}'
+            axes[idx, 3].set_title(title)
+            axes[idx, 3].set_ylabel('True Label')
+            axes[idx, 3].set_xlabel('Predicted Label')
 
     plt.tight_layout()
 
@@ -448,56 +896,76 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
     # Also create a summary plot showing only the best performing window
     if all_results:
-        # Find best performing window by f1 score if available, otherwise by accuracy
-        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_f1_score'] if 'lr_f1_score' in all_results[i] and all_results[i]['lr_f1_score'] is not None else all_results[i]['lr_accuracy'])
-        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_f1_score'] if 'rf_f1_score' in all_results[i] and all_results[i]['rf_f1_score'] is not None else all_results[i]['rf_accuracy'])
-        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_f1_score'] if 'baseline_f1_score' in all_results[i] and all_results[i]['baseline_f1_score'] is not None else all_results[i]['baseline_accuracy'])
+        # Find best performing window by balanced accuracy
+        best_lr_idx = max(range(len(all_results)), key=lambda i: all_results[i]['lr_balanced_accuracy'])
+        best_rf_idx = max(range(len(all_results)), key=lambda i: all_results[i]['rf_balanced_accuracy'])
+        best_xgb_idx = max(range(len(all_results)), key=lambda i: all_results[i]['xgb_balanced_accuracy'])
+        best_baseline_idx = max(range(len(all_results)), key=lambda i: all_results[i]['baseline_balanced_accuracy'])
 
-        fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
         fig.suptitle(f'Best Performing Models - {target_type.replace("_", " ").title()} Prediction',
-                     fontsize=16, fontweight='bold')
+                     fontsize=18, fontweight='bold')
 
         # Best Logistic Regression
         best_lr = all_results[best_lr_idx]
         lr_cm = np.array(best_lr['lr_confusion_matrix'])
         sns.heatmap(lr_cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[0], cbar=True, annot_kws={'size': 14})
+                   ax=axes[0], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
-        title = f'Best Logistic Regression\n{best_lr["time_window"]}h window - Accuracy: {best_lr["lr_accuracy"]:.3f}'
+        title = f'Best Logistic Regression | {best_lr["time_window"]}h window\nBalanced Accuracy: {best_lr["lr_balanced_accuracy"]:.3f}'
         if 'lr_f1_score' in best_lr and best_lr['lr_f1_score'] is not None:
             title += f' | F1: {best_lr["lr_f1_score"]:.3f}'
-        axes[0].set_title(title, fontsize=12, fontweight='bold')
-        axes[0].set_ylabel('True Label', fontsize=11)
-        axes[0].set_xlabel('Predicted Label', fontsize=11)
+        title+= f' | Average Recall: {best_lr["lr_avg_recall"]:.3f}'
+        axes[0].set_title(title, fontsize=14, fontweight='bold')
+        axes[0].set_ylabel('True Label', fontsize=16)
+        axes[0].set_xlabel('Predicted Label', fontsize=16)
 
         # Best Random Forest
         best_rf = all_results[best_rf_idx]
         rf_cm = np.array(best_rf['rf_confusion_matrix'])
         sns.heatmap(rf_cm, annot=True, fmt='d', cmap='Greens',
                    xticklabels=labels, yticklabels=labels,
-                   ax=axes[1], cbar=True, annot_kws={'size': 14})
+                   ax=axes[1], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
-        title = f'Best Random Forest\n{best_rf["time_window"]}h window - Accuracy: {best_rf["rf_accuracy"]:.3f}'
+        title = f'Best Random Forest | {best_rf["time_window"]}h window\nBalanced Accuracy: {best_rf["rf_balanced_accuracy"]:.3f}'
         if 'rf_f1_score' in best_rf and best_rf['rf_f1_score'] is not None:
             title += f' | F1: {best_rf["rf_f1_score"]:.3f}'
-        axes[1].set_title(title, fontsize=12, fontweight='bold')
-        axes[1].set_ylabel('True Label', fontsize=11)
-        axes[1].set_xlabel('Predicted Label', fontsize=11)
+        title+= f' | Average Recall: {best_rf["rf_avg_recall"]:.3f}'
+        axes[1].set_title(title, fontsize=14, fontweight='bold')
+        axes[1].set_ylabel('True Label', fontsize=16)
+        axes[1].set_xlabel('Predicted Label', fontsize=16)
+
+        # Best XGBoost
+        best_xgb = all_results[best_xgb_idx]
+        xgb_cm = np.array(best_xgb['xgb_confusion_matrix'])
+        sns.heatmap(xgb_cm, annot=True, fmt='d', cmap='Purples',
+                   xticklabels=labels, yticklabels=labels,
+                   ax=axes[2], cbar=True, annot_kws={'size': 20})
+        # Build title with F1 score if available
+        title = f'Best XGBoost | {best_xgb["time_window"]}h window\nBalanced Accuracy: {best_xgb["xgb_balanced_accuracy"]:.3f}'
+        if 'xgb_f1_score' in best_xgb and best_xgb['xgb_f1_score'] is not None:
+            title += f' | F1: {best_xgb["xgb_f1_score"]:.3f}'
+        title+= f' | Average Recall: {best_xgb["xgb_avg_recall"]:.3f}'
+        axes[2].set_title(title, fontsize=14, fontweight='bold')
+        axes[2].set_ylabel('True Label', fontsize=16)
+        axes[2].set_xlabel('Predicted Label', fontsize=16)
 
         # Best Baseline
         best_baseline = all_results[best_baseline_idx]
         baseline_cm = np.array(best_baseline['baseline_confusion_matrix'])
         sns.heatmap(baseline_cm, annot=True, fmt='d', cmap='Oranges',
-                   xticklabels=labels, yticklabels=labels,
-                   ax=axes[2], cbar=True, annot_kws={'size': 14})
+                    xticklabels=labels, yticklabels=labels,
+                    ax=axes[3], cbar=True, annot_kws={'size': 20})
         # Build title with F1 score if available
-        title = f'Baseline\n{best_baseline["time_window"]}h window - Accuracy: {best_baseline["baseline_accuracy"]:.3f}'
+        title = f'Baseline | {best_baseline["time_window"]}h window\nBalanced Accuracy: {best_baseline["baseline_balanced_accuracy"]:.3f}'
         if 'baseline_f1_score' in best_baseline and best_baseline['baseline_f1_score'] is not None:
             title += f' | F1: {best_baseline["baseline_f1_score"]:.3f}'
-        axes[2].set_title(title, fontsize=12, fontweight='bold')
-        axes[2].set_ylabel('True Label', fontsize=11)
-        axes[2].set_xlabel('Predicted Label', fontsize=11)
+        title+= f' | Average Recall: {best_baseline["baseline_avg_recall"]:.3f}'
+        axes[3].set_title(title, fontsize=14, fontweight='bold')
+        axes[3].set_ylabel('True Label', fontsize=16)
+        axes[3].set_xlabel('Predicted Label', fontsize=16)
 
         plt.tight_layout()
 
@@ -509,7 +977,8 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
 
 
 
-def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False, use_loocv=False):
+def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False, 
+         use_loocv=False, tune_models=False, temporal_split=False):
     """
     Main function to experiment with different time windows.
     Trains models on screentime data from n hours before each survey to predict mental health outcomes.
@@ -522,6 +991,8 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
     - propagate_labels: if True, propagate positive labels to all entries for users with at least one positive label
     - balanced_class_weight: if True, use the class_weight = 'balanced' hyperparameter for the RF and LR models
     - use_loocv: if True, use leave-one-out cross-validation by user (train on all users except one, test on held-out user)
+    - tune_models: if True, run RandomizedSearchCV for parameter tuning
+    - temporal_split: if True, use chronological per-user split (first 70% train, last 30% test)
     """
     # Validate target_type
     if target_type not in AVAILABLE_LABELS:
@@ -531,52 +1002,50 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
         )
 
     # Configure based on target type
-    label_column = AVAILABLE_LABELS[target_type]
     task_name = target_type.replace('_', ' ').upper()
-
-    # Determine if using generic function or PHQ-9 specific function
-    if target_type == 'phq9':
-        merge_function = merge_daily_screentime_features_with_phq9
-        use_generic = False
-    else:
-        merge_function = merge_daily_screentime_features_with_risk_labels
-        use_generic = True
 
     print("="*80)
     print(f"{task_name} PREDICTION - HOURLY SCREENTIME FEATURES")
     print("Experimenting with different time windows for screentime before surveys...")
     if propagate_labels:
         print("NOTE: Label propagation is ENABLED - users with any positive label will have all entries labeled positive")
+    if tune_models:
+        print("NOTE: RandomizedSearchCV tuning is ENABLED")
+    if temporal_split and not use_loocv:
+        print("NOTE: Temporal split is ENABLED - per user, first 70% train / last 30% test")
     print("="*80)
 
     # Time windows to experiment with (in hours)
-    time_windows = [3,4,5,6,7,8,9]
+    time_windows = [24]
+    subwindow_hours = 1  # Should increase with larger time windows for computational efficiency
     all_results = []
 
     for hours in time_windows:
 
-        # Get data for this time window using the appropriate merge function
-        if use_generic:
-            # Use the generic function for risk labels
-            screentime_data = merge_function(
-                screentime_df=None,
-                risk_labels_df=None,
-                label_column=label_column,
-                fill_method='zero',
-                hours_before_survey=hours,
-                app_user_id=-1
-            )
-        else:
-            # Use the PHQ-9 specific function
-            screentime_data = merge_function(
-                screentime_df=None,
-                fill_method='zero',
-                hours_before_survey=hours,
-                app_user_id=-1
-            )
+        # Build screentime data using the shared subwindow pipeline for all targets.
+        pipeline = create_subwindow_pipeline(
+            target_type=target_type,
+            lookback_hours=hours,
+            subwindow_hours=subwindow_hours,
+            propagate_labels=False,
+            use_accurate_method=True,
+            standardized=True
+        )
+        pipeline.fit(None)
+        merged_dict = pipeline.transform(None)
+        screentime_data = merged_dict.get(hours, pd.DataFrame())
 
         # Train and evaluate models
-        results = train_and_evaluate_models(screentime_data, hours, target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
+        results = train_and_evaluate_models(
+            screentime_data,
+            hours,
+            target_type=target_type,
+            propagate_labels=propagate_labels,
+            balanced_class_weight=balanced_class_weight,
+            use_loocv=use_loocv,
+            tune_models=tune_models,
+            temporal_split=temporal_split
+        )
         if results:
             all_results.append(results)
 
@@ -588,32 +1057,59 @@ def main(target_type='phq9', propagate_labels=False, balanced_class_weight=False
 
         comparison_df = pd.DataFrame(all_results)
         print("\nModel Performance Comparison:")
-        display_cols = ['time_window', 'total_samples', 'lr_accuracy', 'rf_accuracy', 'baseline_accuracy']
-        if 'lr_f1_score' in comparison_df.columns:
-            display_cols.extend(['lr_f1_score', 'rf_f1_score', 'baseline_f1_score'])
+        display_cols = ['time_window', 'total_samples']
+        for col in ['lr_balanced_accuracy', 'rf_balanced_accuracy', 'xgb_balanced_accuracy', 'baseline_balanced_accuracy']:
+            if col in comparison_df.columns:
+                display_cols.append(col)
+        for col in ['lr_f1_score', 'rf_f1_score', 'xgb_f1_score', 'baseline_f1_score']:
+            if col in comparison_df.columns:
+                display_cols.append(col)
+        for col in ['lr_avg_recall', 'rf_avg_recall', 'xgb_avg_recall', 'baseline_avg_recall']:
+            if col in comparison_df.columns:
+                display_cols.append(col)
         print(comparison_df[display_cols].to_string(index=False))
 
         # Find best performing window
-        if 'lr_f1_score' in comparison_df.columns and comparison_df['lr_f1_score'].notna().any():
-            best_lr_window = comparison_df.loc[comparison_df['lr_f1_score'].idxmax()]
-            best_rf_window = comparison_df.loc[comparison_df['rf_f1_score'].idxmax()]
-        else:
-            best_lr_window = comparison_df.loc[comparison_df['lr_accuracy'].idxmax()]
-            best_rf_window = comparison_df.loc[comparison_df['rf_accuracy'].idxmax()]
+        best_lr_window = comparison_df.loc[comparison_df['lr_balanced_accuracy'].idxmax()]
+        best_rf_window = comparison_df.loc[comparison_df['rf_balanced_accuracy'].idxmax()]
+        best_xgb_window = comparison_df.loc[comparison_df['xgb_balanced_accuracy'].idxmax()]
 
-        best_baseline_window = comparison_df.loc[comparison_df['baseline_accuracy'].idxmax()]
+        print(f"\n" + "="*80)
+        print("BEST PERFORMING TIME WINDOWS")
+        print("="*80)
+        print(f"\nLogistic Regression:")
+        print(f"  Best window: {best_lr_window['time_window']}h")
+        print(f"  F1 Score: {best_lr_window['lr_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_lr_window['lr_balanced_accuracy']:.4f}")
+        print(f"  Average Recall: {best_lr_window['lr_avg_recall']:.4f}")
 
-        print("\nBest Performing Windows:")
-        print(f"Logistic Regression: {best_lr_window['time_window']} hours (Accuracy: {best_lr_window['lr_accuracy']:.3f}, F1: {best_lr_window.get('lr_f1_score', 'N/A')})")
-        print(f"Random Forest: {best_rf_window['time_window']} hours (Accuracy: {best_rf_window['rf_accuracy']:.3f}, F1: {best_rf_window.get('rf_f1_score', 'N/A')})")
-        print(f"Baseline: {best_baseline_window['time_window']} hours (Accuracy: {best_baseline_window['baseline_accuracy']:.3f}, F1: {best_baseline_window.get('baseline_f1_score', 'N/A')})")
+        print(f"\nRandom Forest:")
+        print(f"  Best window: {best_rf_window['time_window']}h")
+        print(f"  F1 Score: {best_rf_window['rf_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_rf_window['rf_balanced_accuracy']:.4f}")
+        print(f"  Average Recall: {best_rf_window['rf_avg_recall']:.4f}")
 
-        # Confusion matrices for best windows
-        best_windows = [best_lr_window, best_rf_window, best_baseline_window]
-        plot_confusion_matrices(best_windows, target_type=target_type, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
+        print(f"\nXGBoost:")
+        print(f"  Best window: {best_xgb_window['time_window']}h")
+        print(f"  F1 Score: {best_xgb_window['xgb_f1_score']:.4f}")
+        print(f"  Balanced Accuracy: {best_xgb_window['xgb_balanced_accuracy']:.4f}")
+        print(f"  Average Recall: {best_xgb_window['xgb_avg_recall']:.4f}")
 
+        if 'baseline_balanced_accuracy' in comparison_df.columns:
+            print(f"\nBaseline Model:")
+            if 'baseline_f1_score' in comparison_df.columns:
+                print(f"  F1 Score: {comparison_df['baseline_f1_score'].max()}")
+            print(f"  Balanced Accuracy: {comparison_df['baseline_balanced_accuracy'].max()}")
+            print(f"  Average Recall: {comparison_df['baseline_avg_recall'].max()}")
+
+        # Generate confusion matrix visualizations
+        plot_confusion_matrices(all_results, target_type=target_type, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
     else:
-        print("No results to display. Please check the data and parameters.")
+        print("\nNo results to compare. Insufficient data for all time windows.")
+
+    print("\n" + "="*80)
+    print("Analysis complete!")
+    print("="*80)
 
 
 if __name__ == '__main__':
@@ -624,6 +1120,8 @@ if __name__ == '__main__':
     propagate_labels = False
     balanced_class_weight = False
     use_loocv = False
+    tune_models = False
+    temporal_split = False
 
     # Parse command line arguments
     if len(sys.argv) > 1:
@@ -649,6 +1147,20 @@ if __name__ == '__main__':
         use_loocv = True
         print("Leave-One-Out Cross-Validation enabled")
 
-    # Run main with parsed arguments
-    main(target_type=target_type, propagate_labels=propagate_labels, balanced_class_weight=balanced_class_weight, use_loocv=use_loocv)
+    if '--tune' in sys.argv or '-t' in sys.argv:
+        tune_models = True
+        print("RandomizedSearchCV tuning enabled")
 
+    if '--temporal-split' in sys.argv or '-s' in sys.argv:
+        temporal_split = True
+        print("Temporal per-user 70/30 split enabled")
+
+    # Run main with parsed arguments
+    main(
+        target_type=target_type,
+        propagate_labels=propagate_labels,
+        balanced_class_weight=balanced_class_weight,
+        use_loocv=use_loocv,
+        tune_models=tune_models,
+        temporal_split=temporal_split
+    )
