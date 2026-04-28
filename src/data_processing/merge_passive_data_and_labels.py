@@ -115,7 +115,7 @@ def _prepare_phq9_weekly(phq9_df, week_anchor='MON'):
 
     return phq9_weekly
 
-def _prepare_risk_labels_per_survey(risk_labels_df, label_column):
+def _prepare_risk_labels_per_survey(risk_labels_df, label_column, one_survey_per_day=False):
     """
     Generic helper function to prepare risk labels for merging with health/screentime data.
 
@@ -125,6 +125,9 @@ def _prepare_risk_labels_per_survey(risk_labels_df, label_column):
     Parameters:
     - risk_labels_df: DataFrame with risk data including 'app_user_id', 'timestamp', and the specified label column
     - label_column: name of the risk label column (e.g., 'suicide_risk_label', 'self_harm_risk_label', 'sleep_label')
+    - one_survey_per_day: if True, keep only one survey per user per day to prevent data leakage
+                         For sleep (morning-only), keeps only morning surveys
+                         For other labels, keeps the first survey of the day
 
     Returns:
     - DataFrame with columns ['survey_response_id', 'app_user_id', 'timestamp', label_column]
@@ -143,12 +146,31 @@ def _prepare_risk_labels_per_survey(risk_labels_df, label_column):
 
     # Keep only necessary columns
     columns_to_keep = ['survey_response_id', 'app_user_id', 'timestamp', label_column]
+    # Add survey_id if it exists (needed to distinguish morning from afternoon surveys)
+    if 'survey_id' in risk_labels_copy.columns:
+        columns_to_keep.insert(2, 'survey_id')
+
     # Filter to only existing columns
     columns_to_keep = [col for col in columns_to_keep if col in risk_labels_copy.columns]
     risk_labels_copy = risk_labels_copy[columns_to_keep]
 
     # Drop rows where the label is null
     risk_labels_copy = risk_labels_copy.dropna(subset=[label_column])
+
+    # Prevent data leakage: For a given day, use step/health data only ONCE
+    if one_survey_per_day:
+        risk_labels_copy['date'] = risk_labels_copy['timestamp'].dt.normalize()
+
+        # For sleep_label (morning only survey), keep only morning surveys (survey_id == 0)
+        if label_column == 'sleep_label' and 'survey_id' in risk_labels_copy.columns:
+            risk_labels_copy = risk_labels_copy[risk_labels_copy['survey_id'] == 0]
+
+        # For other labels, keep only the first survey of each day per user
+        # This ensures the same daily step data is not used multiple times
+        risk_labels_copy = risk_labels_copy.sort_values(['app_user_id', 'date', 'timestamp'])
+        risk_labels_copy = risk_labels_copy.drop_duplicates(subset=['app_user_id', 'date'], keep='first')
+
+        risk_labels_copy = risk_labels_copy.drop(columns=['date'])
 
     return risk_labels_copy
 
@@ -628,7 +650,7 @@ def merge_daily_screentime_features_with_phq9(screentime_df=None, phq9_df=phq9_d
 
 def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_column,
                                            fill_method='zero', hours_before_survey=24,
-                                           standardized=True, reference_hour=9):
+                                           standardized=True, reference_hour=9, one_survey_per_day=True):
     """
     Generic helper function to merge daily features (hourly time windows) with risk labels.
 
@@ -643,6 +665,10 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
     - hours_before_survey: number of hours before a survey to look back for data (default 24)
     - standardized: if True, use a fixed daily reference hour for all users (default False)
     - reference_hour: anchor hour used when standardized=True (default 9)
+    - one_survey_per_day: if True, keep only one survey per user per day to prevent data leakage.
+                         For sleep (morning-only), keeps only morning surveys.
+                         For other labels, keeps first survey of the day.
+                         Default True to prevent data leakage.
 
     Returns:
     - DataFrame with columns ['app_user_id', 'survey_response_id', 'survey_timestamp',
@@ -653,8 +679,8 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
         print("Warning: No hourly data available")
         return pd.DataFrame()
 
-    # Prepare risk labels
-    risk_labels_prepared = _prepare_risk_labels_per_survey(risk_labels_df, label_column)
+    # Prepare risk labels with deduplication to prevent data leakage
+    risk_labels_prepared = _prepare_risk_labels_per_survey(risk_labels_df, label_column, one_survey_per_day=one_survey_per_day)
 
     if risk_labels_prepared.empty:
         print(f"Warning: No {label_column} data available")
@@ -815,9 +841,16 @@ def merge_daily_step_features_with_risk_labels(
     standardized=True,
     reference_hour=9,
     average_shared_labels=False,
+    one_survey_per_day=True,
 ):
     """
     Merge hourly step windows (last n hours before survey) with a selected daily risk label.
+
+    Parameters:
+    - one_survey_per_day: if True, ensures only one survey per user per day is used to prevent
+                         data leakage from using the same step data for multiple surveys on same day.
+                         For sleep (morning-only), keeps only morning surveys.
+                         For other labels, keeps first survey of the day.
     """
     from src.data_processing.passive_data_analysis import hourly_health_data
 
@@ -849,6 +882,7 @@ def merge_daily_step_features_with_risk_labels(
         hours_before_survey=hours_before_survey,
         standardized=standardized,
         reference_hour=reference_hour,
+        one_survey_per_day=one_survey_per_day,
     )
 
 
