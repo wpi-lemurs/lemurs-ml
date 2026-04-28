@@ -148,8 +148,29 @@ def create_step_risk_pipeline(
     standardized=True,
     reference_hour=9,
     average_shared_labels=False,
+    one_survey_per_day=True,
 ):
-    """Create a pipeline for risk prediction using step windows before survey time."""
+    """Create a pipeline for risk prediction using step windows before survey time.
+
+    Parameters:
+    -----------
+    target_type : str
+        Target type: 'suicide_risk', 'self_harm', 'sleep', etc.
+    time_windows : list of int or None
+        Time windows in hours
+    propagate_labels : bool
+        Whether to propagate positive labels to all user entries
+    standardized : bool
+        Whether to standardize feature times
+    reference_hour : int
+        Reference hour for standardized features
+    average_shared_labels : bool
+        Whether to average labels that appear on both morning and afternoon surveys
+    one_survey_per_day : bool, default=True
+        If True, prevents data leakage by ensuring only one survey per user per day is used.
+        For sleep (morning-only), keeps only morning surveys.
+        For other labels, keeps first survey of the day.
+    """
     if time_windows is None:
         time_windows = [3, 6, 9, 12]
 
@@ -161,6 +182,7 @@ def create_step_risk_pipeline(
             standardized=standardized,
             reference_hour=reference_hour,
             average_shared_labels=average_shared_labels,
+            one_survey_per_day=one_survey_per_day,
         ))
     ])
 
