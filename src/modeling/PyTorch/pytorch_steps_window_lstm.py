@@ -30,6 +30,7 @@ def _select_pipeline(
     time_windows: Iterable[int],
     propagate_labels: bool,
     average_shared_labels: bool = True,
+    one_survey_per_day: bool = True,
 ):
     if target_type == "phq9":
         return create_step_phq9_pipeline(
@@ -45,6 +46,7 @@ def _select_pipeline(
         time_windows=list(time_windows),
         propagate_labels=propagate_labels,
         average_shared_labels=effective_average_shared_labels,
+        one_survey_per_day=one_survey_per_day,
     )
 
 
@@ -566,6 +568,7 @@ def run_experiment(
     early_stopping_min_delta=1e-4,
     min_epochs=5,
     debug_shapes=False,
+    one_survey_per_day=True,
 ):
     effective_average_shared_labels = False if target_type == "sleep" else average_shared_labels
     if target_type == "sleep" and average_shared_labels:
@@ -576,6 +579,7 @@ def run_experiment(
         time_windows=time_windows,
         propagate_labels=propagate_labels,
         average_shared_labels=effective_average_shared_labels,
+        one_survey_per_day=one_survey_per_day,
     )
 
     pipeline.fit(None)
@@ -673,7 +677,7 @@ def print_summary(results: Dict[int, dict]):
 
 if __name__ == "__main__":
     results = run_experiment(
-        target_type=os.getenv("TARGET_TYPE", "social_connection"),
+        target_type=os.getenv("TARGET_TYPE", "sleep"),
         time_windows=[int(x) for x in os.getenv("TIME_WINDOWS", "24").split(",")],
         propagate_labels=os.getenv("PROPAGATE_LABELS", "false").lower() == "true",
         average_shared_labels=os.getenv("AVERAGE_SHARED_LABELS", "true").lower() == "true",
@@ -685,7 +689,7 @@ if __name__ == "__main__":
         use_weighted_sampler=os.getenv("USE_WEIGHTED_SAMPLER", "false").lower() == "true",
         epochs=int(os.getenv("EPOCHS", "75")),
         batch_size=int(os.getenv("BATCH_SIZE", "32")),
-        use_loocv=os.getenv("USE_LOOCV", "true").lower() == "true",
+        use_loocv=os.getenv("USE_LOOCV", "false").lower() == "true",
         use_early_stopping=os.getenv("USE_EARLY_STOPPING", "false").lower() == "true",
         debug_shapes=os.getenv("DEBUG_SHAPES", "false").lower() == "true",
     )
