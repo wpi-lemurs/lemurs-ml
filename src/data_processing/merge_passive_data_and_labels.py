@@ -641,7 +641,7 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
     - label_column: name of the risk label column (e.g., 'suicide_risk_label', 'self_harm_risk_label', 'sleep_label')
     - fill_method: method to fill null values in hourly features (default 'zero')
     - hours_before_survey: number of hours before a survey to look back for data (default 24)
-    - standardized: if True, use a fixed daily reference hour for all users (default False)
+    - standardized: if True, use a fixed daily reference hour for all users (default True)
     - reference_hour: anchor hour used when standardized=True (default 9)
 
     Returns:
@@ -689,6 +689,18 @@ def _merge_daily_features_with_risk_labels(hourly_data, risk_labels_df, label_co
         if metric_col is None:
             print(f"Warning: No metric column found in hourly data for user {user_id}")
             continue
+
+        # if label is sleep, drop the afternoon survey (N/A sleep label)
+        if label_column == 'sleep_label':
+            n = user_surveys[label_column].value_counts().get('N/A', 0)
+            if n > 0:
+                print(f"Info: Dropping {n} afternoon surveys with 'N/A' sleep label for user {user_id}")
+            user_surveys = user_surveys[user_surveys[label_column] != 'N/A'].copy()
+        elif label_column != 'severity_label':
+            # For non-sleep or phq9 labels, drop the afternoon surveys
+            user_surveys['date'] = user_surveys['timestamp'].dt.date
+            user_surveys = user_surveys.sort_values('timestamp').drop_duplicates(subset='date', keep='first')
+            user_surveys = user_surveys.drop(columns=['date']).copy()
 
         # For each survey, look back n hours
         for _, survey_row in user_surveys.iterrows():

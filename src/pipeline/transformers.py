@@ -758,6 +758,11 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         )
         import pandas as pd
 
+        # TODO: Standardize morning timestamps to 9 AM and afternoon timestamps to 3 PM
+        # instead of averaging everything into the morning survey
+        # Down the line, may want to experiment with just flooring the timestamp
+        # With that, would need to implement changes to prevent data leakage where one of a user's surveys has a lookback
+        # window that includes data already seen in another. Not an issue for LOUOCV, but a major issue for train/test split
         def _standardize_to_9am(series: pd.Series) -> pd.Series:
             series = pd.to_datetime(series, errors='coerce')
             return series.dt.normalize() + pd.Timedelta(hours=9)
@@ -883,6 +888,15 @@ class SubWindowFeatureLabelMerger(BaseEstimator, TransformerMixin):
         # Apply label propagation if requested
         if self.propagate_labels and not merged.empty:
             merged = propagate_positive_labels(merged, label_col, positive_class)
+        # Filter out second survey in the same day
+        elif not merged.empty:
+            merged['temp_timestamp'] = pd.to_datetime(merged['survey_timestamp'])
+            merged['temp_date'] = merged['temp_timestamp'].dt.date
+            merged = merged.sort_values(by=['app_user_id', 'temp_timestamp'])
+            merged = merged.drop_duplicates(subset=['app_user_id', 'temp_date'], keep='first')
+            merged = merged.drop(columns=['temp_date'])
+        print('Final df after filtering')
+        print(merged[['app_user_id', 'survey_timestamp', label_col]].head())
 
         # Return as dict with lookback_hours as key (for consistency with other pipelines)
         return {self.lookback_hours: merged}
