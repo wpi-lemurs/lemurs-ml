@@ -43,6 +43,8 @@ lemurs-ml/
 
 ## Setup
 
+Get the .env file from either Kevin or the previous MQP team and place it in the project root. This file should contain the necessary environment variables for database access.
+
 Create and activate a virtual environment:
 
 ```bash
