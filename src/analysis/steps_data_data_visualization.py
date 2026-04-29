@@ -98,9 +98,10 @@ def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: st
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
-    # Filter to only include dates from November 15th, 2024 onwards
-    cutoff_date = pd.Timestamp('2025-11-15')
-    df = df[df[timestamp_col] >= cutoff_date]
+    # Filter to only include dates from November 15th, 2024 onwards and before December 31, 2025 (first study)
+    start_cutoff_date = pd.Timestamp('2025-11-15')
+    end_cutoff_date = pd.Timestamp('2025-12-31')
+    df = df[(df[timestamp_col] >= start_cutoff_date) & (df[timestamp_col] < end_cutoff_date)]
 
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
@@ -146,7 +147,7 @@ def per_user_daily_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: st
 def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
     """Return DataFrame with rows (app_user_id, day_index) and count of records for each day index.
     Also add a 'date' column that maps each day index to the calendar date (study_start + day-1).
-    Only includes data from November 15th, 2024 onwards.
+    Only includes data from November 15th, 2025 onwards and before December 31, 2025.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
@@ -159,9 +160,10 @@ def per_user_daily_record_counts(df: pd.DataFrame, timestamp_col: str, app_user_
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
 
-    # Filter to only include dates from November 15th, 2024 onwards
-    cutoff_date = pd.Timestamp('2025-11-15')
-    df = df[df[timestamp_col] >= cutoff_date]
+    # Filter to only include dates from November 15th, 2025 onwards and before December 31, 2025 (first study)
+    start_cutoff_date = pd.Timestamp('2025-11-15')
+    end_cutoff_date = pd.Timestamp('2025-12-31')
+    df = df[(df[timestamp_col] >= start_cutoff_date) & (df[timestamp_col] < end_cutoff_date)]
 
     if df.empty:
         return pd.DataFrame(columns=[app_user_col, 'day', 'count', 'date'])
@@ -922,9 +924,242 @@ def plot_completeness_distribution(completeness_df: pd.DataFrame,
     return out_path
 
 
+def per_user_daily_survey_submissions(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
+    """Return DataFrame with rows (app_user_id, day_index) and survey_submitted flag for each day.
+    Only includes data from November 15th, 2025 onwards and before December 31, 2025.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'survey_submitted', 'date'])
+
+    if app_user_col not in df.columns:
+        df['app_user_id'] = 'all'
+        app_user_col = 'app_user_id'
+
+    df = df.dropna(subset=[timestamp_col]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'survey_submitted', 'date'])
+
+    # Filter to only include dates from November 15th, 2025 onwards and before December 31, 2025
+    start_cutoff_date = pd.Timestamp('2025-11-15')
+    end_cutoff_date = pd.Timestamp('2025-12-31')
+    df = df[(df[timestamp_col] >= start_cutoff_date) & (df[timestamp_col] < end_cutoff_date)]
+
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'survey_submitted', 'date'])
+
+    # Set study_start to November 15th, 2025
+    if study_start is None:
+        study_start = pd.Timestamp('2025-11-15').normalize()
+    else:
+        study_start = pd.to_datetime(study_start).normalize()
+
+    df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
+    max_day = df['day'].max()
+    study_days = int(max_day) if max_day > 0 else 28
+
+    df = df[df['day'] >= 1]
+
+    # Get unique days per user (one submission per day counts as survey submitted)
+    grouped = df.groupby([app_user_col, 'day']).size().reset_index(name='count')
+    grouped['survey_submitted'] = 1
+
+    # ensure all day rows exist for each user (fill missing days with 0)
+    users = grouped[app_user_col].unique().tolist()
+    all_rows = []
+    for u in users:
+        user_days = grouped[grouped[app_user_col] == u].set_index('day')['survey_submitted']
+        for d in range(1, study_days + 1):
+            submitted = int(user_days.get(d, 0))
+            date_for_d = (pd.to_datetime(study_start) + pd.Timedelta(days=d-1)).date()
+            all_rows.append({app_user_col: u, 'day': d, 'survey_submitted': submitted, 'date': date_for_d})
+    result = pd.DataFrame(all_rows)
+    return result
+
+
+def plot_step_and_survey_heatmap(daily_steps: pd.DataFrame, daily_surveys: pd.DataFrame, app_user_col='app_user_id',
+                                  out_path: Path = Path('steps_and_survey_heatmap.png')):
+    """Plot combined heatmap showing step data and survey submissions for each user by day.
+    
+    Color coding:
+    - Dark Green (#228B22): Has both step data and survey
+    - Light Green (#90EE90): Has step data only
+    - Red (#DC143C): Has survey only
+    - White (#FFFFFF): Neither step data nor survey
+    """
+    # Create pivot tables
+    steps_pivot = daily_steps.pivot(index=app_user_col, columns='day', values='count').fillna(0)
+    surveys_pivot = daily_surveys.pivot(index=app_user_col, columns='day', values='survey_submitted').fillna(0)
+    
+    # Ensure both have the same shape and index
+    all_users = sorted(set(steps_pivot.index) | set(surveys_pivot.index))
+    all_days = sorted(set(steps_pivot.columns) | set(surveys_pivot.columns))
+    
+    steps_pivot = steps_pivot.reindex(all_users, fill_value=0)
+    surveys_pivot = surveys_pivot.reindex(all_users, fill_value=0)
+    steps_pivot = steps_pivot.reindex(columns=all_days, fill_value=0)
+    surveys_pivot = surveys_pivot.reindex(columns=all_days, fill_value=0)
+    
+    # Create binary indicators
+    has_steps = (steps_pivot > 0).astype(int)
+    has_survey = (surveys_pivot > 0).astype(int)
+    
+    # Combine into single matrix with 4 states: 0=none, 1=steps only, 2=survey only, 3=both
+    combined = has_steps + (has_survey * 2)
+    
+    fig, ax = plt.subplots(figsize=(20, max(8, len(all_users) * 0.4)))
+    
+    # Create custom colormap: white (none), light green (steps), red (survey), dark green (both)
+    colors_list = ['#FFFFFF', '#90EE90', '#DC143C', '#228B22']
+    cmap = plt.cm.colors.ListedColormap(colors_list)
+    
+    im = ax.imshow(combined, cmap=cmap, aspect='auto', interpolation='nearest', vmin=0, vmax=3)
+    
+    # Set ticks and labels
+    study_days = len(all_days)
+    ax.set_xticks(range(study_days))
+    ax.set_xticklabels(range(1, study_days + 1))
+    ax.set_yticks(range(len(all_users)))
+    ax.set_yticklabels(all_users)
+    
+    # Add date labels if available
+    if 'date' in daily_steps.columns:
+        date_map = daily_steps.drop_duplicates('day').set_index('day')['date'].to_dict()
+        date_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d')
+                       if date_map.get(d) else '' for d in sorted(all_days)]
+        ax.set_xticklabels(date_labels, rotation=45, ha='right', fontsize=9)
+    
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Participant ID', fontsize=12, fontweight='bold')
+    ax.set_title('Daily Step Data and Survey Submission Status by Participant',
+                 fontsize=14, fontweight='bold', pad=20)
+    
+    # Add key
+    cbar = plt.colorbar(im, ax=ax, ticks=[0.375, 1.125, 1.875, 2.625])
+    cbar.ax.set_yticklabels(['Neither', 'Steps Only', 'Survey Only', 'Both'])
+    cbar.set_label('Data Status', fontsize=11, fontweight='bold')
+    
+    # Add grid
+    ax.set_xticks([x - 0.5 for x in range(1, study_days)], minor=True)
+    ax.set_yticks([y - 0.5 for y in range(1, len(all_users))], minor=True)
+    ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return out_path
+
+
+def per_user_daily_screentime_submissions(df: pd.DataFrame, timestamp_col: str, app_user_col: str = 'app_user_id', study_start=None):
+    """Return DataFrame with rows (app_user_id, day_index) and screentime_submitted flag for each day.
+    Only includes data from November 15th, 2025 onwards and before December 31, 2025.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'screentime_submitted', 'date'])
+
+    if app_user_col not in df.columns:
+        df['app_user_id'] = 'all'
+        app_user_col = 'app_user_id'
+
+    df = df.dropna(subset=[timestamp_col]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'screentime_submitted', 'date'])
+
+    # Filter to only include dates from November 15th, 2025 onwards and before December 31, 2025
+    start_cutoff_date = pd.Timestamp('2025-11-15')
+    end_cutoff_date = pd.Timestamp('2025-12-31')
+    df = df[(df[timestamp_col] >= start_cutoff_date) & (df[timestamp_col] < end_cutoff_date)]
+
+    if df.empty:
+        return pd.DataFrame(columns=[app_user_col, 'day', 'screentime_submitted', 'date'])
+
+    if study_start is None:
+        study_start = pd.Timestamp('2025-11-15').normalize()
+    else:
+        study_start = pd.to_datetime(study_start).normalize()
+
+    df['day'] = (df[timestamp_col].dt.normalize() - study_start).dt.days + 1
+    max_day = df['day'].max()
+    study_days = int(max_day) if max_day > 0 else 28
+
+    df = df[df['day'] >= 1]
+
+    grouped = df.groupby([app_user_col, 'day']).size().reset_index(name='count')
+    grouped['screentime_submitted'] = 1
+
+    users = grouped[app_user_col].unique().tolist()
+    all_rows = []
+    for u in users:
+        user_days = grouped[grouped[app_user_col] == u].set_index('day')['screentime_submitted']
+        for d in range(1, study_days + 1):
+            submitted = int(user_days.get(d, 0))
+            date_for_d = (pd.to_datetime(study_start) + pd.Timedelta(days=d - 1)).date()
+            all_rows.append({app_user_col: u, 'day': d, 'screentime_submitted': submitted, 'date': date_for_d})
+
+    return pd.DataFrame(all_rows)
+
+
+def plot_screentime_and_survey_heatmap(daily_screentime: pd.DataFrame, daily_surveys: pd.DataFrame,
+                                       app_user_col='app_user_id',
+                                       out_path: Path = Path('screentime_and_survey_heatmap.png')):
+    """Plot combined heatmap showing screentime submissions and survey submissions for each user by day."""
+    screentime_pivot = daily_screentime.pivot(index=app_user_col, columns='day', values='screentime_submitted').fillna(0)
+    surveys_pivot = daily_surveys.pivot(index=app_user_col, columns='day', values='survey_submitted').fillna(0)
+
+    all_users = sorted(set(screentime_pivot.index) | set(surveys_pivot.index))
+    all_days = sorted(set(screentime_pivot.columns) | set(surveys_pivot.columns))
+
+    screentime_pivot = screentime_pivot.reindex(all_users, fill_value=0)
+    surveys_pivot = surveys_pivot.reindex(all_users, fill_value=0)
+    screentime_pivot = screentime_pivot.reindex(columns=all_days, fill_value=0)
+    surveys_pivot = surveys_pivot.reindex(columns=all_days, fill_value=0)
+
+    has_screentime = (screentime_pivot > 0).astype(int)
+    has_survey = (surveys_pivot > 0).astype(int)
+    combined = has_screentime + (has_survey * 2)
+
+    fig, ax = plt.subplots(figsize=(20, max(8, len(all_users) * 0.4)))
+
+    colors_list = ['#FFFFFF', '#90EE90', '#DC143C', '#228B22']
+    cmap = plt.cm.colors.ListedColormap(colors_list)
+
+    im = ax.imshow(combined, cmap=cmap, aspect='auto', interpolation='nearest', vmin=0, vmax=3)
+
+    study_days = len(all_days)
+    ax.set_xticks(range(study_days))
+    ax.set_xticklabels(range(1, study_days + 1))
+    ax.set_yticks(range(len(all_users)))
+    ax.set_yticklabels(all_users)
+
+    if 'date' in daily_screentime.columns:
+        date_map = daily_screentime.drop_duplicates('day').set_index('day')['date'].to_dict()
+        date_labels = [pd.to_datetime(date_map.get(d, '')).strftime('%m-%d')
+                       if date_map.get(d) else '' for d in sorted(all_days)]
+        ax.set_xticklabels(date_labels, rotation=45, ha='right', fontsize=9)
+
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Participant ID', fontsize=12, fontweight='bold')
+    ax.set_title('Daily Screentime Submission and Survey Status by Participant',
+                 fontsize=14, fontweight='bold', pad=20)
+
+    cbar = plt.colorbar(im, ax=ax, ticks=[0.375, 1.125, 1.875, 2.625])
+    cbar.ax.set_yticklabels(['Neither', 'Screentime Only', 'Survey Only', 'Both'])
+    cbar.set_label('Data Status', fontsize=11, fontweight='bold')
+
+    ax.set_xticks([x - 0.5 for x in range(1, study_days)], minor=True)
+    ax.set_yticks([y - 0.5 for y in range(1, len(all_users))], minor=True)
+    ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return out_path
+
+
 def run_analysis(output_dir: Path = Path('analysis_outputs')):
     output_dir.mkdir(parents=True, exist_ok=True)
     service = DatabaseService()
+    surveys = None
+    screentime = None
 
     try:
         # Load steps data from database only
@@ -938,6 +1173,44 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         print(f"Steps data columns: {steps.columns.tolist()}")
         print(f"Steps data shape: {steps.shape}")
 
+        # Load screentime data for the parallel submission heatmap
+        print("Loading screentime data from database...")
+        screentime = load_table_from_db(service, 'screentime')
+
+        if screentime is None or screentime.empty:
+            print("Warning: Could not load screentime data - screentime visualization will be skipped")
+        else:
+            print(f"Screentime data columns: {screentime.columns.tolist()}")
+            print(f"Screentime data shape: {screentime.shape}")
+            if 'app_user_id' not in screentime.columns:
+                print("Warning: screentime data missing 'app_user_id' column")
+            ts_col_check = normalize_timestamp_column(screentime)
+            if ts_col_check is None:
+                print("Warning: screentime data has no recognized timestamp column")
+            else:
+                print(f"Screentime timestamp column identified: '{ts_col_check}'")
+
+        # Load survey data
+        print("Loading survey data from database...")
+        surveys = None
+        surveys = load_table_from_db(service, 'survey_response')
+        if surveys is not None and not surveys.empty:
+            print("Loaded survey data from survey_response table")
+        
+        if surveys is None or surveys.empty:
+            print("Warning: Could not load survey data - combined visualization will be skipped")
+        else:
+            print(f"Survey data columns: {surveys.columns.tolist()}")
+            print(f"Survey data shape: {surveys.shape}")
+            # Verify required columns exist
+            if 'app_user_id' not in surveys.columns:
+                print("Warning: survey data missing 'app_user_id' column")
+            ts_col_check = normalize_timestamp_column(surveys)
+            if ts_col_check is None:
+                print("Warning: survey data has no recognized timestamp column")
+            else:
+                print(f"Survey timestamp column identified: '{ts_col_check}'")
+
         # Load umass_id mapping table
         print("Loading umass_id mapping table...")
         id_mapping = load_table_from_db(service, 'umass_id')
@@ -946,8 +1219,13 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
             print(f"Loaded {len(id_mapping)} ID mappings")
             # Map app_user_id to umass_id in steps data
             steps = map_to_umass_ids(steps, id_mapping, 'app_user_id')
+            # Also map surveys if available
+            if surveys is not None and not surveys.empty:
+                surveys = map_to_umass_ids(surveys, id_mapping, 'app_user_id')
+            if screentime is not None and not screentime.empty:
+                screentime = map_to_umass_ids(screentime, id_mapping, 'app_user_id')
             # DO NOT RENAME - keep as 'app_user_id' so all downstream functions work
-            print("Mapped app_user_id to umass_id in steps data")
+            print("Mapped app_user_id to umass_id in data")
             print(f"Steps columns after mapping: {steps.columns.tolist()}")
         else:
             print("Warning: Could not load umass_id mapping, using app_user_id")
@@ -1078,6 +1356,56 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
     print(f'Saved ALL USERS hourly records to {all_hourly_records_path}')
     print(f'Saved ALL USERS hourly steps to {all_hourly_steps_path}')
 
+    # Generate combined step and survey heatmap if survey data is available
+    combined_heatmap_path = None
+    if surveys is not None and not surveys.empty:
+        print("\nGenerating combined step and survey heatmap...")
+        ts_col_survey = normalize_timestamp_column(surveys)
+        if ts_col_survey is not None:
+            daily_surveys = per_user_daily_survey_submissions(surveys, ts_col_survey, app_user_col='app_user_id')
+            if not daily_surveys.empty:
+                combined_heatmap_path = plot_step_and_survey_heatmap(
+                    daily_counts,
+                    daily_surveys,
+                    out_path=output_dir / 'steps_and_survey_heatmap.png'
+                )
+                print(f'Saved combined step and survey heatmap to {combined_heatmap_path}')
+            else:
+                print("Warning: Could not generate daily survey submissions data")
+        else:
+            print("Warning: Could not find timestamp column in survey data")
+    else:
+        print("\nSkipping combined step and survey heatmap - no survey data available")
+
+    # Generate combined screentime and survey heatmap if screentime data is available
+    screentime_heatmap_path = None
+    if screentime is not None and not screentime.empty:
+        print("\nGenerating combined screentime and survey heatmap...")
+        ts_col_screentime = normalize_timestamp_column(screentime)
+        if ts_col_screentime is not None:
+            daily_screentime = per_user_daily_screentime_submissions(screentime, ts_col_screentime, app_user_col='app_user_id')
+            if not daily_screentime.empty and surveys is not None and not surveys.empty:
+                ts_col_survey = normalize_timestamp_column(surveys)
+                if ts_col_survey is not None:
+                    daily_surveys = per_user_daily_survey_submissions(surveys, ts_col_survey, app_user_col='app_user_id')
+                    if not daily_surveys.empty:
+                        screentime_heatmap_path = plot_screentime_and_survey_heatmap(
+                            daily_screentime,
+                            daily_surveys,
+                            out_path=output_dir / 'screentime_and_survey_heatmap.png'
+                        )
+                        print(f'Saved combined screentime and survey heatmap to {screentime_heatmap_path}')
+                    else:
+                        print("Warning: Could not generate daily survey submissions data for screentime heatmap")
+                else:
+                    print("Warning: Could not find timestamp column in survey data")
+            else:
+                print("Warning: Could not generate daily screentime submissions data")
+        else:
+            print("Warning: Could not find timestamp column in screentime data")
+    else:
+        print("\nSkipping combined screentime and survey heatmap - no screentime data available")
+
     results['steps'] = {
         'daily_counts': daily_counts,
         'summary': summary,
@@ -1092,7 +1420,9 @@ def run_analysis(output_dir: Path = Path('analysis_outputs')):
         'all_daily_records_path': all_daily_records_path,
         'all_timeline_path': all_timeline_path,
         'all_hourly_records_path': all_hourly_records_path,
-        'all_hourly_steps_path': all_hourly_steps_path
+        'all_hourly_steps_path': all_hourly_steps_path,
+        'combined_heatmap_path': combined_heatmap_path,
+        'screentime_heatmap_path': screentime_heatmap_path
     }
 
     return results
