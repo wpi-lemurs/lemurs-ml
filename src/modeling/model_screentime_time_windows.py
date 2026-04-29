@@ -318,13 +318,16 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
 
             # Train models for this fold
             try:
+                # Tuning hyperparameters for each fold is very expensive, so use tuned hyperparameters from
+                # train/test split instead
+
                 # Logistic Regression (with scaled data)
-                lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=class_weight)
+                lr_model = LogisticRegression(max_iter=10000, random_state=42, class_weight=None, C=0.01, solver='liblinear')
                 lr_model.fit(X_train_scaled, y_train)
                 lr_pred = lr_model.predict(X_test_scaled)
 
                 # Random Forest (without scaling)
-                rf_model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+                rf_model = RandomForestClassifier(n_estimators=300, random_state=42, class_weight='balanced', max_depth=30, min_samples_split=5, min_samples_leaf=1)
                 rf_model.fit(X_train, y_train)
                 rf_pred = rf_model.predict(X_test)
 
@@ -334,9 +337,14 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
                 scale_pos_weight = class_counts[0] / class_counts[1] if len(class_counts) > 1 else 1.0
                 
                 xgb_model = xgb.XGBClassifier(
+                    subsample=0.7,
+                    reg_alpha=1,
                     n_estimators=600,
+                    min_child_weight=3,
                     max_depth=5,
-                    learning_rate=0.05,
+                    learning_rate=0.1,
+                    gamma=5,
+                    colsample_bytree=0.5,
                     scale_pos_weight=scale_pos_weight,
                     random_state=42
                 )
@@ -440,7 +448,7 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             results['xgb_f1_score'] = None
 
         # Feature importance (train on full dataset)
-        rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight=class_weight)
+        rf_full = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
         rf_full.fit(X, y)
         feature_importance = pd.DataFrame({
             'feature': feature_names,
@@ -587,12 +595,6 @@ def train_and_evaluate_models(data, time_window, target_type='phq9', propagate_l
             lr_model = Pipeline([
                 ('scaler', StandardScaler()),
                 # params selected from previous tuning results on sleep 24hr lookback
-                '''
-                Best params from tuning on suicide risk 24hr lookback:
-                C=100.0,
-                solver='liblinear',
-                class_weight='balanced'
-                '''
                 ('model', LogisticRegression(
                     C = 100.0, solver = 'liblinear', max_iter=10000, random_state=42, class_weight='balanced'))
             ])
@@ -800,9 +802,11 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
     if not all_results:
         return
 
-    # Define balanced suffix early so it's available throughout the function
-    balanced_suffix = '_balanced' if balanced_class_weight else ''
+    # Define suffixes so they're available throughout the function
     loocv_suffix = '_loocv' if use_loocv else ''
+    temporal_suffix = '_temporal' if any(
+        result.get('split_method') == 'temporal_70_30' for result in all_results
+    ) else ''
 
     # Determine label names based on target type
     if target_type == 'phq9':
@@ -889,7 +893,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
     plt.tight_layout()
 
     # Save figure
-    output_filename = f'confusion_matrices_{target_type}{balanced_suffix}{loocv_suffix}.png'
+    output_filename = f'confusion_matrices_{target_type}{loocv_suffix}{temporal_suffix}.png'
     output_path = data_dir / output_filename
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()  # Close the figure to free memory
@@ -970,7 +974,7 @@ def plot_confusion_matrices(all_results, target_type='phq9', balanced_class_weig
         plt.tight_layout()
 
         # Save best models figure
-        best_output_filename = f'confusion_matrices_{target_type}{balanced_suffix}{loocv_suffix}_best.png'
+        best_output_filename = f'confusion_matrices_{target_type}{loocv_suffix}{temporal_suffix}_best.png'
         best_output_path = data_dir / best_output_filename
         plt.savefig(best_output_path, dpi=300, bbox_inches='tight')
         plt.close()  # Close the figure to free memory
